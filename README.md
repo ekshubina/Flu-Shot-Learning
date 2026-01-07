@@ -74,7 +74,9 @@ Data is provided courtesy of the United States National Center for Health Statis
 
 ## License
 
-This project is provided for educational and learning purposes as part of the DrivenData competition.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+Note: This project is created for educational and learning purposes as part of the DrivenData competition.
 
 ## Contributing
 
