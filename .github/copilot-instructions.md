@@ -16,6 +16,7 @@ The project structure is straightforward:
 - **main.py**: Central analysis and model training script (currently empty - where all work happens)
 - **requirements.txt**: Python dependencies (currently empty - will need pandas, scikit-learn, etc.)
 - **docs/PROBLEM_DESCRIPTION.md**: Complete feature documentation and evaluation details
+- **data/**: Contains the dataset (see Data Sets section below)
 
 ### Feature Categories
 
@@ -56,6 +57,28 @@ Since this is multilabel (not multiclass):
 5. Train two independent binary classifiers (or one multilabel model)
 6. Generate probability predictions (0.0-1.0 range)
 7. Evaluate with ROC AUC and create submission CSV with format: `respondent_id,h1n1_vaccine,seasonal_vaccine`
+
+## Data Sets
+
+The `./data/` directory contains the competition datasets:
+
+- **training_set_features.csv**: Features for training samples (respondent_id + 35 features)
+- **training_set_labels.csv**: Target labels for training samples (respondent_id, h1n1_vaccine, seasonal_vaccine)
+- **test_set_features.csv**: Features for test samples (respondent_id + 35 features)
+- **submission_format.csv**: Template for submission format (respondent_id, h1n1_vaccine, seasonal_vaccine)
+
+### Data Confidentiality Rule
+
+⚠️ **CRITICAL**: The competition data is proprietary and derived from CDC's National 2009 H1N1 Flu Survey.
+
+**Constraints**:
+- Data files must **NOT be committed to version control** (already excluded in `.gitignore`)
+- Data must **NOT be exposed publicly** or shared outside the team/organization
+- Data must **NOT be uploaded** to public repositories, public Jupyter notebooks, Discord, Slack, or any shared storage
+- Use data exclusively for this competition project
+- Downloaded data should be stored locally with restricted file access
+
+These restrictions are part of the DrivenData competition's terms of service and data use agreement.
 
 ## Key Files & Patterns
 
