@@ -18,6 +18,18 @@ The project structure is straightforward:
 - **docs/PROBLEM_DESCRIPTION.md**: Complete feature documentation and evaluation details
 - **data/**: Contains the dataset (see Data Sets section below)
 
+### Development Setup
+
+This project uses a Python virtual environment (`.venv`) to isolate dependencies. Always activate the virtual environment before working:
+```bash
+source .venv/bin/activate
+```
+
+Install dependencies from `requirements.txt`:
+```bash
+pip install -r requirements.txt
+```
+
 ### Feature Categories
 
 Organize feature engineering and EDA around these logical groupings:
