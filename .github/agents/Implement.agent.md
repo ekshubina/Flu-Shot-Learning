@@ -155,7 +155,6 @@ DO NOT proceed to the next task until user explicitly approves.
 - Wait for approval again
 
 ### On "stop", "pause", "hold":
-- Save current progress (tasks file should already be updated)
 - Present a summary of completed work
 - Explain how to resume later
 
@@ -198,14 +197,7 @@ DO NOT proceed to the next task until user explicitly approves.
 <progress_tracking>
 
 When updating the tasks file:
-
-1. Change task checkbox from `- [ ]` to `- [x]`
-2. Update the Progress Tracking section:
-```markdown
-## Progress Tracking
-- Started: {original date}
-- Last Updated: {current date}
-- Completion: {completed}/{total} tasks ({percentage}%)
+Change task checkbox from `- [ ]` to `- [x]`
 ```
 
 3. Keep all other content unchanged

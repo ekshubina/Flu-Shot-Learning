@@ -1,0 +1,181 @@
+# Advanced Configuration for Flu Shot Prediction Pipeline
+# XGBoost with feature engineering and Bayesian hyperparameter optimization
+# Expected AUROC: 0.84-0.86 (top competition submissions)
+
+# Data configuration
+data:
+  train_features_path: data/training_set_features.csv
+  train_labels_path: data/training_set_labels.csv
+  test_features_path: data/test_set_features.csv
+  submission_format_path: data/submission_format.csv
+  random_seed: 42
+  test_size: 0.2
+  cv_folds: 5
+
+# Advanced imputation strategy
+imputation:
+  strategy: mice
+  # Strategy options: drop_rows, drop_columns, mean, mode, knn, mice, flag_as_missing
+  parameters:
+    # MICE-specific parameters
+    estimator: random_forest  # What estimator to use for MICE
+    max_iter: 10
+    n_nearest_features: 15
+    min_value: 0
+    max_value: 1
+    imputation_order: ascending  # How to order features
+
+# Advanced feature encoding configuration
+encoding:
+  strategies:
+    opinion:
+      type: ordinal  # Preserve order for Likert scales (1-5)
+    behavioral:
+      type: ordinal  # Binary features already 0/1
+    medical:
+      type: ordinal  # Mix of binary and ordinal
+    demographic:
+      type: target  # Target encoding for categorical (high cardinality)
+      parameters:
+        smoothing: 1.0
+        handle_unknown: return_nan
+    household:
+      type: polynomial  # Create squared terms for numeric
+      parameters:
+        degree: 2
+        include_bias: false
+    geographic:
+      type: ordinal  # Ordinal region codes
+    concern:
+      type: ordinal  # Ordinal scales
+    employment:
+      type: target  # Target encode employment categories
+      parameters:
+        smoothing: 1.0
+  
+  # Create interaction features
+  create_interactions: true
+  interaction_groups:
+    - [opinion_h1n1_risk, doctor_recc_h1n1]  # Risk opinion × doctor recommendation
+    - [health_insurance, chronic_med_condition]  # Insurance × chronic condition
+
+# Model configuration - XGBoost for better performance
+model:
+  model_type: xgboost
+  # Options: logistic_regression, random_forest, xgboost, lightgbm
+  
+  hyperparameters:
+    # XGBoost parameters
+    n_estimators: 200
+    max_depth: 6
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    min_child_weight: 1
+    gamma: 0
+    reg_alpha: 0.01  # L1 regularization
+    reg_lambda: 1.0  # L2 regularization
+    random_state: 42
+    scale_pos_weight: auto  # Handle class imbalance automatically
+    objective: binary:logistic
+    eval_metric: auc
+
+# Training configuration with hyperparameter optimization
+training:
+  cv_strategy: stratified_kfold
+  cv_folds: 5
+  
+  # Enable advanced hyperparameter search
+  hyperparameter_search: true
+  search_strategy: bayesian  # Bayesian optimization (most efficient)
+  
+  # Search space for hyperparameters
+  search_space:
+    max_depth: [4, 5, 6, 7, 8]
+    learning_rate: [0.01, 0.03, 0.05, 0.1]
+    subsample: [0.6, 0.7, 0.8, 0.9, 1.0]
+    colsample_bytree: [0.6, 0.7, 0.8, 0.9, 1.0]
+    reg_alpha: [0, 0.01, 0.1]
+    reg_lambda: [0.1, 0.5, 1.0]
+  
+  # Bayesian optimization specifics
+  search_params:
+    n_trials: 50  # Number of trials for optimization
+    timeout: 3600  # Maximum time in seconds
+    n_jobs: -1  # Use all cores
+  
+  # Class imbalance handling
+  class_weight_strategy: balanced
+  use_smote: true  # Synthetic oversampling on each fold
+  
+  # Threshold tuning for F1 optimization
+  threshold_tuning: true
+  threshold_metric: f1  # Optimize for F1 instead of AUC
+
+# Advanced calibration
+calibration:
+  method: temperature_scaling
+  # Options: none, platt_scaling, isotonic, temperature_scaling
+  
+  # Temperature scaling finds single scaling parameter
+  calibration_folds: 5
+
+# Comprehensive evaluation
+evaluation:
+  metrics:
+    - auroc  # Primary metric
+    - calibration_error
+    - confusion_matrix
+    - brier_score
+    - sensitivity_specificity
+    - threshold_metrics
+  
+  # Probability threshold (will be tuned if threshold_tuning=true)
+  threshold: adaptive  # Use tuned threshold instead of 0.5
+  
+  # Create comprehensive visualizations
+  create_plots: true
+  plot_types:
+    - roc_curves
+    - calibration_curve
+    - feature_importance
+    - prediction_confidence
+    - confusion_matrices
+
+# Detailed experiment tracking
+tracking:
+  enabled: true
+  log_path: experiments_xgboost.csv
+  log_metrics:
+    # Per-vaccine metrics
+    - auroc_h1n1
+    - auroc_seasonal
+    - auroc_mean  # Primary metric
+    # Calibration metrics
+    - calibration_error_h1n1
+    - calibration_error_seasonal
+    - brier_score_h1n1
+    - brier_score_seasonal
+    # Confusion matrix metrics
+    - sensitivity_h1n1
+    - sensitivity_seasonal
+    - specificity_h1n1
+    - specificity_seasonal
+    - f1_h1n1
+    - f1_seasonal
+    # Hyperparameter values
+    - learning_rate
+    - max_depth
+    - subsample
+
+# Test set prediction
+prediction:
+  output_dir: ./submissions/
+  output_filename: submission_xgboost.csv
+  validate_submission: true
+
+# Logging configuration - verbose for debugging
+logging:
+  level: DEBUG  # More detailed logging
+  log_file: logs/xgboost_pipeline.log
+  format: '[%(asctime)s] %(name)s - %(levelname)s - %(message)s'

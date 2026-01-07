@@ -123,7 +123,7 @@ dmypy.json
 .pyre/
 
 # Data files (ignore large datasets)
-data/
+./data/
 *.csv
 *.xlsx
 *.parquet

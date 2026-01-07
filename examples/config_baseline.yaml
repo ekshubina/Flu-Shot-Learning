@@ -1,0 +1,135 @@
+# Baseline Configuration for Flu Shot Prediction Pipeline
+# Simple logistic regression with basic preprocessing
+# Expected AUROC: 0.80-0.82 (competition baseline)
+
+# Data configuration
+data:
+  train_features_path: data/training_set_features.csv
+  train_labels_path: data/training_set_labels.csv
+  test_features_path: data/test_set_features.csv
+  submission_format_path: data/submission_format.csv
+  random_seed: 42
+  test_size: 0.2
+  cv_folds: 5
+
+# Imputation strategy for missing values
+imputation:
+  strategy: mean  # Simple mean imputation for numeric, mode for categorical
+  # Strategy options: drop_rows, drop_columns, mean, mode, knn, mice, flag_as_missing
+  parameters:
+    drop_threshold: 0.5  # For drop_columns: drop if >50% missing
+    n_neighbors: 5  # For KNN imputation
+
+# Feature encoding configuration
+encoding:
+  strategies:
+    opinion:
+      type: ordinal  # Preserve order for Likert scales
+    behavioral:
+      type: ordinal  # Binary 0/1, order preserved
+    medical:
+      type: ordinal  # Binary and ordinal features
+    demographic:
+      type: onehot  # Categorical demographics
+      parameters:
+        drop_first: true
+    household:
+      type: ordinal  # Numeric (already scaled)
+    geographic:
+      type: ordinal  # Ordinal region codes
+    concern:
+      type: ordinal  # Ordinal concern/knowledge scales
+    employment:
+      type: onehot  # Categorical employment
+      parameters:
+        drop_first: true
+        handle_unknown: ignore  # For test set categories
+  
+  # Features to drop (optional)
+  drop_features: []
+
+# Model configuration
+model:
+  model_type: logistic_regression
+  # Options: logistic_regression, random_forest, xgboost, lightgbm
+  
+  hyperparameters:
+    # Logistic Regression parameters
+    penalty: l2
+    C: 1.0  # Inverse regularization strength (higher = less regularization)
+    solver: lbfgs
+    max_iter: 1000
+    random_state: 42
+    class_weight: balanced  # Handle class imbalance
+
+# Training configuration
+training:
+  cv_strategy: stratified_kfold
+  # Options: stratified_kfold, repeated_stratified_kfold
+  
+  cv_folds: 5
+  
+  # Hyperparameter search
+  hyperparameter_search: false
+  search_strategy: grid  # Options: grid, random, bayesian
+  
+  # If search enabled, override hyperparameters with search space
+  search_space:
+    C: [0.001, 0.01, 0.1, 1.0, 10.0]
+    penalty: [l1, l2]
+  
+  # Class imbalance handling
+  class_weight_strategy: balanced  # Options: balanced, custom, none
+  use_smote: false  # Synthetic oversampling
+  threshold_tuning: false  # Optimize threshold on validation set
+
+# Calibration of probability estimates
+calibration:
+  method: platt_scaling
+  # Options: none, platt_scaling, isotonic, temperature_scaling
+  
+  calibration_folds: 3  # For nested cross-validation
+
+# Evaluation configuration
+evaluation:
+  metrics:
+    - auroc  # Primary metric
+    - calibration_error
+    - confusion_matrix
+    - brier_score
+  
+  # Probability threshold (default 0.5)
+  threshold: 0.5
+  
+  # Create visualizations
+  create_plots: true
+  plot_types:
+    - roc_curves
+    - calibration_curve
+    - feature_importance
+    - prediction_confidence
+
+# Experiment tracking
+tracking:
+  enabled: true
+  log_path: experiments_baseline.csv
+  log_metrics:
+    - auroc_h1n1
+    - auroc_seasonal
+    - auroc_mean
+    - calibration_error_h1n1
+    - calibration_error_seasonal
+    - brier_score_h1n1
+    - brier_score_seasonal
+
+# Test set prediction
+prediction:
+  output_dir: ./submissions/
+  output_filename: submission_baseline.csv
+  validate_submission: true
+
+# Logging configuration
+logging:
+  level: INFO  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_file: logs/baseline_pipeline.log
+  format: '[%(asctime)s] %(name)s - %(levelname)s - %(message)s'

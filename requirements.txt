@@ -1,1 +1,28 @@
-pandas
+# Core ML and Data Science Dependencies
+# =========================================
+# Python 3.8+
+
+# Core data science stack
+numpy>=1.20.0,<2.0.0
+pandas>=1.3.0,<3.0.0
+scikit-learn>=0.24.0,<2.0.0
+
+# Visualization
+matplotlib>=3.3.0,<4.0.0
+seaborn>=0.11.0,<1.0.0
+
+# Advanced ML Algorithms (Optional but recommended)
+# For ensemble experiments and hyperparameter tuning
+xgboost>=1.5.0,<2.0.0
+lightgbm>=3.2.0,<5.0.0
+
+# Hyperparameter Optimization (Optional)
+# For Bayesian optimization during hyperparameter search
+optuna>=2.10.0,<4.0.0
+
+# Jupyter for exploratory work (Optional)
+jupyter>=1.0.0,<2.0.0
+notebook>=6.4.0,<7.0.0
+
+# Type checking (Optional)
+pydantic>=1.8.0,<3.0.0
