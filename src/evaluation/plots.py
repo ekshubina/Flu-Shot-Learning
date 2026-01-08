@@ -217,6 +217,133 @@ def plot_calibration_curve(
     return fig
 
 
+def plot_calibration_curves(
+    y_true_h1n1: np.ndarray,
+    y_true_seasonal: np.ndarray,
+    y_pred_h1n1: np.ndarray,
+    y_pred_seasonal: np.ndarray,
+    n_bins: int = 10,
+    figsize: Tuple[int, int] = (14, 5),
+    title: str = "Calibration Curves - Flu Vaccine Prediction",
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Plot calibration (reliability) diagrams for both H1N1 and seasonal vaccines.
+    
+    A calibration curve shows the relationship between predicted probability
+    and empirical frequency of the positive class. A well-calibrated model
+    has points close to the diagonal line (perfect calibration).
+    
+    This function creates a 1x2 subplot figure with:
+    - Left: H1N1 vaccine calibration curve
+    - Right: Seasonal vaccine calibration curve
+    
+    Each calibration curve shows:
+    - Scatter plot of (mean predicted probability, empirical frequency) per bin
+    - Perfect calibration diagonal (y=x) as reference line
+    - Histogram of prediction distribution below
+    
+    Parameters:
+        y_true_h1n1 (np.ndarray): True H1N1 labels (n_samples,)
+        y_true_seasonal (np.ndarray): True seasonal labels (n_samples,)
+        y_pred_h1n1 (np.ndarray): Predicted probabilities for H1N1 (n_samples,) in [0, 1]
+        y_pred_seasonal (np.ndarray): Predicted probabilities for seasonal (n_samples,) in [0, 1]
+        n_bins (int): Number of bins for grouping predictions. Default: 10
+        figsize (Tuple[int, int]): Figure size (width, height). Default: (14, 5)
+        title (str): Figure title. Default: "Calibration Curves - Flu Vaccine Prediction"
+        save_path (Optional[str]): If provided, save figure to this path
+    
+    Returns:
+        plt.Figure: Matplotlib figure object with two calibration curves
+    
+    Implementation notes:
+        - Bin predictions into n_bins equal-width bins (0-0.1, 0.1-0.2, etc.)
+        - For each bin, compute mean predicted probability (X-axis) and empirical frequency (Y-axis)
+        - Plot scatter points (size proportional to bin sample count) and diagonal reference line
+        - Include histogram of prediction distribution as secondary plot
+        - Two subplots: H1N1 and seasonal side-by-side
+        - Validates input arrays have matching shapes and valid value ranges
+        - Returns figure object for further manipulation
+    """
+    # Validate inputs
+    if y_true_h1n1.shape != y_pred_h1n1.shape:
+        raise ValueError("y_true_h1n1 and y_pred_h1n1 shapes don't match")
+    if y_true_seasonal.shape != y_pred_seasonal.shape:
+        raise ValueError("y_true_seasonal and y_pred_seasonal shapes don't match")
+    if y_true_h1n1.shape != y_true_seasonal.shape:
+        raise ValueError("y_true_h1n1 and y_true_seasonal shapes don't match")
+    if not np.all((y_true_h1n1 == 0) | (y_true_h1n1 == 1)):
+        raise ValueError("y_true_h1n1 must contain only 0 or 1")
+    if not np.all((y_true_seasonal == 0) | (y_true_seasonal == 1)):
+        raise ValueError("y_true_seasonal must contain only 0 or 1")
+    if not np.all((y_pred_h1n1 >= 0) & (y_pred_h1n1 <= 1)):
+        raise ValueError("y_pred_h1n1 must be in [0, 1]")
+    if not np.all((y_pred_seasonal >= 0) & (y_pred_seasonal <= 1)):
+        raise ValueError("y_pred_seasonal must be in [0, 1]")
+    
+    # Create figure with two subplots for H1N1 and seasonal
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
+    
+    # Helper function to compute and plot calibration curve for one vaccine
+    def plot_vaccine_calibration(ax, y_true, y_pred, vaccine_name):
+        # Compute calibration curve points
+        bin_boundaries = np.linspace(0, 1, n_bins + 1)
+        bin_centers = []
+        bin_accuracies = []
+        bin_counts = []
+        
+        for i in range(n_bins):
+            bin_lower = bin_boundaries[i]
+            bin_upper = bin_boundaries[i + 1]
+            
+            # Last bin includes upper boundary
+            if i == n_bins - 1:
+                mask = (y_pred >= bin_lower) & (y_pred <= bin_upper)
+            else:
+                mask = (y_pred >= bin_lower) & (y_pred < bin_upper)
+            
+            # Only include non-empty bins
+            if np.any(mask):
+                bin_centers.append(np.mean(y_pred[mask]))
+                bin_accuracies.append(np.mean(y_true[mask]))
+                bin_counts.append(np.sum(mask))
+        
+        bin_centers = np.array(bin_centers)
+        bin_accuracies = np.array(bin_accuracies)
+        bin_counts = np.array(bin_counts)
+        
+        # Plot calibration curve
+        ax.scatter(bin_centers, bin_accuracies, s=bin_counts*2, alpha=0.6,
+                   color='#1f77b4', edgecolors='black', linewidth=1,
+                   label='Calibration Curve')
+        
+        # Plot perfect calibration line
+        ax.plot([0, 1], [0, 1], 'k--', lw=2, label='Perfect Calibration')
+        
+        # Labels and formatting
+        ax.set_xlabel('Mean Predicted Probability', fontsize=11)
+        ax.set_ylabel('Empirical Frequency', fontsize=11)
+        ax.set_title(f'{vaccine_name} - Calibration Curve', fontsize=12, fontweight='bold')
+        ax.legend(loc='upper left', fontsize=10)
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim([-0.05, 1.05])
+        ax.set_ylim([-0.05, 1.05])
+    
+    # Plot calibration curves for both vaccines
+    plot_vaccine_calibration(axes[0], y_true_h1n1, y_pred_h1n1, 'H1N1 Vaccine')
+    plot_vaccine_calibration(axes[1], y_true_seasonal, y_pred_seasonal, 'Seasonal Vaccine')
+    
+    # Set overall title
+    fig.suptitle(title, fontsize=14, fontweight='bold', y=1.00)
+    fig.tight_layout()
+    
+    # Save if requested
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches='tight')
+    
+    return fig
+
+
 def plot_feature_importance(
     feature_names: np.ndarray,
     importances: np.ndarray,
@@ -401,5 +528,85 @@ def plot_prediction_confidence(
     # Save if requested
     if save_path:
         fig.savefig(save_path, dpi=300, bbox_inches='tight')
+    
+    return fig
+
+
+def plot_confidence_distribution(
+    y_pred_h1n1: np.ndarray,
+    y_pred_seasonal: np.ndarray,
+    output_path: Optional[str] = None,
+    figsize: Tuple[int, int] = (12, 5),
+    title: str = "Confidence Distribution - Predicted Probabilities",
+) -> plt.Figure:
+    """
+    Plot histogram of predicted probabilities (confidence distribution).
+    
+    Displays the distribution of predicted probabilities for both H1N1 and seasonal
+    vaccines in a single figure with two subplots. This shows how confident the model
+    is in its predictions across all samples.
+    
+    Parameters:
+        y_pred_h1n1 (np.ndarray): Predicted probabilities for H1N1 (n_samples,) in [0.0, 1.0]
+        y_pred_seasonal (np.ndarray): Predicted probabilities for seasonal (n_samples,) in [0.0, 1.0]
+        output_path (Optional[str]): If provided, save figure to this path
+        figsize (Tuple[int, int]): Figure size (width, height). Default: (12, 5)
+        title (str): Figure title. Default: "Confidence Distribution - Predicted Probabilities"
+    
+    Returns:
+        plt.Figure: Matplotlib figure object with confidence distribution histograms
+    
+    Implementation notes:
+        - Creates 1x2 subplot figure (H1N1 and seasonal side-by-side)
+        - Plots histograms with 20-30 bins (default: 25)
+        - X-axis: Predicted probability [0.0, 1.0]
+        - Y-axis: Frequency/Count
+        - Includes mean predicted probability as vertical reference line
+        - Both vaccines on same figure for easy comparison
+        - Saves figure to output_path if provided with 300 dpi and tight layout
+        - Returns matplotlib Figure object for further manipulation
+    """
+    # Validate inputs
+    if y_pred_h1n1.shape != y_pred_seasonal.shape:
+        raise ValueError("y_pred_h1n1 and y_pred_seasonal shapes don't match")
+    if not np.all((y_pred_h1n1 >= 0) & (y_pred_h1n1 <= 1)):
+        raise ValueError("y_pred_h1n1 must be in [0.0, 1.0]")
+    if not np.all((y_pred_seasonal >= 0) & (y_pred_seasonal <= 1)):
+        raise ValueError("y_pred_seasonal must be in [0.0, 1.0]")
+    
+    # Create figure with two subplots
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
+    
+    # Plot H1N1 confidence distribution
+    axes[0].hist(y_pred_h1n1, bins=25, alpha=0.7, color='#1f77b4',
+                 edgecolor='black', linewidth=0.8)
+    axes[0].axvline(np.mean(y_pred_h1n1), color='red', linestyle='--', linewidth=2,
+                    label=f'Mean = {np.mean(y_pred_h1n1):.3f}')
+    axes[0].set_xlabel('Predicted Probability', fontsize=11)
+    axes[0].set_ylabel('Frequency', fontsize=11)
+    axes[0].set_title('H1N1 Vaccine', fontsize=12, fontweight='bold')
+    axes[0].legend(fontsize=10, loc='upper right')
+    axes[0].grid(True, alpha=0.3, axis='y')
+    axes[0].set_xlim([-0.02, 1.02])
+    
+    # Plot Seasonal confidence distribution
+    axes[1].hist(y_pred_seasonal, bins=25, alpha=0.7, color='#ff7f0e',
+                 edgecolor='black', linewidth=0.8)
+    axes[1].axvline(np.mean(y_pred_seasonal), color='red', linestyle='--', linewidth=2,
+                    label=f'Mean = {np.mean(y_pred_seasonal):.3f}')
+    axes[1].set_xlabel('Predicted Probability', fontsize=11)
+    axes[1].set_ylabel('Frequency', fontsize=11)
+    axes[1].set_title('Seasonal Vaccine', fontsize=12, fontweight='bold')
+    axes[1].legend(fontsize=10, loc='upper right')
+    axes[1].grid(True, alpha=0.3, axis='y')
+    axes[1].set_xlim([-0.02, 1.02])
+    
+    # Set overall title
+    fig.suptitle(title, fontsize=14, fontweight='bold', y=1.00)
+    fig.tight_layout()
+    
+    # Save if requested
+    if output_path:
+        fig.savefig(output_path, dpi=300, bbox_inches='tight')
     
     return fig

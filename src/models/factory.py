@@ -22,6 +22,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict, List, Any, Tuple
 import numpy as np
 import pandas as pd
+from sklearn.linear_model import LogisticRegression
 
 
 class BaseModel(ABC):
@@ -253,54 +254,138 @@ class LogisticRegressionModel(BaseModel):
         """Initialize LogisticRegression model."""
         super().__init__(config)
         self.model_type = "logistic_regression"
+        
+        # Extract hyperparameters from config
+        hyperparams = {}
+        if config and isinstance(config, dict) and "hyperparameters" in config:
+            hyperparams = config["hyperparameters"]
+        
+        # Set default hyperparameters with config overrides
+        self.C = hyperparams.get("C", 1.0)
+        self.penalty = hyperparams.get("penalty", "l2")
+        self.solver = hyperparams.get("solver", "lbfgs")
+        self.max_iter = hyperparams.get("max_iter", 1000)
+        self.class_weight = hyperparams.get("class_weight", "balanced")
+        self.random_state = hyperparams.get("random_state", 42)
+        
+        # Initialize the sklearn model
+        self._model = LogisticRegression(
+            C=self.C,
+            penalty=self.penalty,
+            solver=self.solver,
+            max_iter=self.max_iter,
+            class_weight=self.class_weight,
+            random_state=self.random_state
+        )
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "LogisticRegressionModel":
         """
         Train logistic regression model.
         
         Implementation notes:
-            - TODO: Store feature names from X.columns
-            - TODO: Create sklearn LogisticRegression with hyperparameters
-            - TODO: Fit on (X, y)
-            - TODO: Set self.fitted = True
+            - Store feature names from X.columns
+            - Create sklearn LogisticRegression with hyperparameters
+            - Fit on (X, y)
+            - Set self.fitted = True
         """
-        # TODO: Implement
-        pass
+        # Store feature names for later use
+        self.feature_names = list(X.columns)
+        
+        # Train the sklearn LogisticRegression model
+        self._model.fit(X, y)
+        
+        # Set fitted flag
+        self.fitted = True
+        
+        # Store coefficients as feature importances (absolute value)
+        self.feature_importances_ = np.abs(self._model.coef_[0])
+        
+        return self
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         """
         Return probability predictions.
         
         Implementation notes:
-            - TODO: Check if fitted
-            - TODO: Call self._model.predict_proba(X)
-            - TODO: Return (n_samples, 2) array
+            - Check if fitted
+            - Call self._model.predict_proba(X)
+            - Return (n_samples, 2) array
         """
-        # TODO: Implement
-        pass
+        if not self.fitted:
+            raise ValueError("Model must be fitted before calling predict_proba(). Call fit() first.")
+        
+        return self._model.predict_proba(X)
 
     def get_feature_importance(self) -> pd.DataFrame:
         """
         Get logistic regression coefficients as importance.
         
         Implementation notes:
-            - TODO: Get coefficients from self._model.coef_[0]
-            - TODO: Use absolute value for importance
-            - TODO: Create DataFrame with feature names and importance
-            - TODO: Sort by importance descending
+            - Get coefficients from self._model.coef_[0]
+            - Use absolute value for importance
+            - Create DataFrame with feature names and importance
+            - Sort by importance descending
         """
-        # TODO: Implement
-        pass
+        if not self.fitted:
+            raise ValueError("Model must be fitted before calling get_feature_importance(). Call fit() first.")
+        
+        # Get coefficients and convert to absolute value for importance
+        importance_scores = np.abs(self._model.coef_[0])
+        
+        # Create DataFrame with feature names and importance
+        importance_df = pd.DataFrame({
+            "feature": self.feature_names,
+            "importance": importance_scores
+        })
+        
+        # Sort by importance descending
+        importance_df = importance_df.sort_values("importance", ascending=False).reset_index(drop=True)
+        
+        return importance_df
 
     def get_params(self, deep: bool = True) -> Dict[str, Any]:
         """Get model parameters."""
-        # TODO: Implement
-        pass
+        params = {
+            "C": self.C,
+            "penalty": self.penalty,
+            "solver": self.solver,
+            "max_iter": self.max_iter,
+            "class_weight": self.class_weight,
+            "random_state": self.random_state
+        }
+        return params
 
     def set_params(self, **params) -> "LogisticRegressionModel":
         """Set model parameters."""
-        # TODO: Implement
-        pass
+        # Update instance attributes
+        for key, value in params.items():
+            if key == "C":
+                self.C = value
+            elif key == "penalty":
+                self.penalty = value
+            elif key == "solver":
+                self.solver = value
+            elif key == "max_iter":
+                self.max_iter = value
+            elif key == "class_weight":
+                self.class_weight = value
+            elif key == "random_state":
+                self.random_state = value
+        
+        # Recreate the sklearn model with updated parameters
+        self._model = LogisticRegression(
+            C=self.C,
+            penalty=self.penalty,
+            solver=self.solver,
+            max_iter=self.max_iter,
+            class_weight=self.class_weight,
+            random_state=self.random_state
+        )
+        
+        # Reset fitted flag
+        self.fitted = False
+        
+        return self
 
 
 class XGBoostModel(BaseModel):

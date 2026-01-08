@@ -11,6 +11,9 @@ scikit-learn>=0.24.0,<2.0.0
 matplotlib>=3.3.0,<4.0.0
 seaborn>=0.11.0,<1.0.0
 
+# Configuration Management
+pyyaml>=5.4.0,<7.0.0
+
 # Advanced ML Algorithms (Optional but recommended)
 # For ensemble experiments and hyperparameter tuning
 xgboost>=1.5.0,<2.0.0

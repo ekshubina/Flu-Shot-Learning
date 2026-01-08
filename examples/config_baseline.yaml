@@ -85,8 +85,8 @@ training:
 
 # Calibration of probability estimates
 calibration:
-  method: platt_scaling
-  # Options: none, platt_scaling, isotonic, temperature_scaling
+  method: platt
+  # Options: none, platt, isotonic, temperature
   
   calibration_folds: 3  # For nested cross-validation
 

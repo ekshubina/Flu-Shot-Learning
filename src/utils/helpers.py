@@ -10,10 +10,12 @@ Provides common utilities like:
 Reference: SYSTEM_DESIGN.md - Component 9: Utilities
 """
 
-from typing import Tuple, Dict, List
+from typing import Tuple, Dict, List, Optional
 import numpy as np
 import pandas as pd
 from pathlib import Path
+from sklearn.model_selection import train_test_split, StratifiedKFold
+import random
 
 
 # Feature group definitions based on problem analysis
@@ -125,8 +127,12 @@ def stratified_train_test_split(
         - TODO: Set stratify=y for stratification
         - TODO: Return tuple of 4 arrays
     """
-    # TODO: Implement
-    raise NotImplementedError("stratified_train_test_split() not yet implemented")
+    return train_test_split(
+        X, y,
+        test_size=test_size,
+        stratify=y,
+        random_state=random_state
+    )
 
 
 def stratified_k_fold_split(
@@ -154,8 +160,9 @@ def stratified_k_fold_split(
         - TODO: Iterate over splits
         - TODO: Yield (train_idx, test_idx) tuples
     """
-    # TODO: Implement
-    raise NotImplementedError("stratified_k_fold_split() not yet implemented")
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    for train_idx, test_idx in skf.split(X, y):
+        yield train_idx, test_idx
 
 
 def compute_class_weights(
@@ -182,8 +189,19 @@ def compute_class_weights(
         - TODO: If balanced_sqrt, take square root
         - TODO: Return dictionary
     """
-    # TODO: Implement
-    raise NotImplementedError("compute_class_weights() not yet implemented")
+    unique, counts = np.unique(y, return_counts=True)
+    total = len(y)
+    
+    weights = {}
+    for label, count in zip(unique, counts):
+        if strategy == 'balanced':
+            weights[int(label)] = total / (len(unique) * count)
+        elif strategy == 'balanced_sqrt':
+            weights[int(label)] = np.sqrt(total / (len(unique) * count))
+        else:
+            raise ValueError(f"Unknown strategy: {strategy}")
+    
+    return weights
 
 
 def get_feature_group(group_name: str) -> List[str]:
@@ -205,8 +223,9 @@ def get_feature_group(group_name: str) -> List[str]:
         - TODO: Return feature list
         - TODO: Raise ValueError if not found
     """
-    # TODO: Implement
-    raise NotImplementedError("get_feature_group() not yet implemented")
+    if group_name not in FEATURE_GROUPS:
+        raise ValueError(f"Unknown feature group: {group_name}. Valid groups: {list(FEATURE_GROUPS.keys())}")
+    return FEATURE_GROUPS[group_name].copy()
 
 
 def get_all_features() -> List[str]:
@@ -241,8 +260,8 @@ def create_feature_group_mask(
         - TODO: Set True where feature in group
         - TODO: Return boolean array
     """
-    # TODO: Implement
-    raise NotImplementedError("create_feature_group_mask() not yet implemented")
+    group_features = get_feature_group(group_name)
+    return np.array([feature in group_features for feature in all_features])
 
 
 def ensure_parent_directory(file_path: str) -> None:
@@ -257,8 +276,8 @@ def ensure_parent_directory(file_path: str) -> None:
         - TODO: Create parent directories if needed
         - TODO: Use parents.mkdir(parents=True, exist_ok=True)
     """
-    # TODO: Implement
-    raise NotImplementedError("ensure_parent_directory() not yet implemented")
+    path = Path(file_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def load_data_safely(
@@ -286,8 +305,14 @@ def load_data_safely(
         - TODO: Raise ValueError if read fails
         - TODO: Return DataFrame
     """
-    # TODO: Implement
-    raise NotImplementedError("load_data_safely() not yet implemented")
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+    
+    try:
+        return pd.read_csv(path, **kwargs)
+    except Exception as e:
+        raise ValueError(f"Failed to read CSV file {path}: {e}")
 
 
 def seed_all_random_states(seed: int = 42) -> None:
@@ -304,5 +329,134 @@ def seed_all_random_states(seed: int = 42) -> None:
         - TODO: Set random.seed()
         - TODO: No return value
     """
-    # TODO: Implement
-    raise NotImplementedError("seed_all_random_states() not yet implemented")
+    np.random.seed(seed)
+    random.seed(seed)
+
+
+def create_stratification_column(
+    h1n1_labels: pd.Series,
+    seasonal_labels: pd.Series,
+) -> pd.Series:
+    """
+    Create combined stratification column for multilabel problem.
+    
+    For multilabel classification with two targets (h1n1_vaccine, seasonal_vaccine),
+    creates a synthetic stratification column that encodes all four label combinations:
+    - (0, 0) -> 0: No vaccine
+    - (1, 0) -> 1: H1N1 only
+    - (0, 1) -> 2: Seasonal only
+    - (1, 1) -> 3: Both vaccines
+    
+    This enables StratifiedKFold to create balanced folds respecting both targets.
+    
+    Parameters:
+        h1n1_labels (pd.Series): H1N1 vaccine binary labels (0 or 1)
+        seasonal_labels (pd.Series): Seasonal vaccine binary labels (0 or 1)
+    
+    Returns:
+        pd.Series: Combined stratification column with values {0, 1, 2, 3}
+        
+    Example:
+        >>> h1n1 = pd.Series([0, 1, 0, 1])
+        >>> seasonal = pd.Series([0, 0, 1, 1])
+        >>> strat = create_stratification_column(h1n1, seasonal)
+        >>> strat.tolist()
+        [0, 1, 2, 3]
+    """
+    return h1n1_labels + 2 * seasonal_labels
+
+
+def validate_respondent_ids(
+    respondent_ids: pd.Series,
+    raise_on_error: bool = True,
+) -> Tuple[bool, List[str]]:
+    """
+    Validate respondent ID series for data integrity.
+    
+    Checks:
+    - No missing values
+    - All values are unique
+    - All values are numeric/integers
+    
+    Parameters:
+        respondent_ids (pd.Series): Series of respondent IDs
+        raise_on_error (bool): If True, raise exception on validation failure.
+                              If False, return (False, errors). Default: True
+    
+    Returns:
+        Tuple[bool, List[str]]: (is_valid, error_messages)
+        - is_valid: True if all checks pass
+        - error_messages: List of validation error descriptions
+        
+    Raises:
+        ValueError: If raise_on_error=True and validation fails
+        
+    Example:
+        >>> ids = pd.Series([1, 2, 3, 2])  # Duplicate 2
+        >>> is_valid, errors = validate_respondent_ids(ids, raise_on_error=False)
+        >>> is_valid
+        False
+        >>> errors[0]
+        'Duplicate respondent IDs found'
+    """
+    errors = []
+    
+    # Check for missing values
+    if respondent_ids.isna().any():
+        errors.append("Missing respondent IDs found")
+    
+    # Check for duplicates
+    if respondent_ids.nunique() != len(respondent_ids):
+        errors.append("Duplicate respondent IDs found")
+    
+    # Check for numeric type
+    try:
+        pd.to_numeric(respondent_ids)
+    except (ValueError, TypeError):
+        errors.append("Non-numeric respondent IDs found")
+    
+    is_valid = len(errors) == 0
+    
+    if not is_valid and raise_on_error:
+        raise ValueError(f"Respondent ID validation failed: {'; '.join(errors)}")
+    
+    return is_valid, errors
+
+
+def create_output_directory(
+    output_dir: str,
+    verbose: bool = True,
+) -> Path:
+    """
+    Create output directory structure.
+    
+    Creates directory and all parent directories if they don't exist.
+    
+    Parameters:
+        output_dir (str): Path to output directory to create
+        verbose (bool): If True, log creation status. Default: True
+    
+    Returns:
+        Path: Path object of created directory
+        
+    Example:
+        >>> output_path = create_output_directory("results/experiment_1/")
+        >>> output_path.exists()
+        True
+    """
+    path = Path(output_dir)
+    
+    # Create directories if they don't exist
+    if not path.exists():
+        path.mkdir(parents=True, exist_ok=True)
+        if verbose:
+            from src.utils.logging import get_logger
+            logger = get_logger(__name__)
+            logger.info(f"Created output directory: {path}")
+    else:
+        if verbose:
+            from src.utils.logging import get_logger
+            logger = get_logger(__name__)
+            logger.debug(f"Output directory already exists: {path}")
+    
+    return path

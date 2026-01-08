@@ -258,8 +258,40 @@ class OrdinalEncoder(FeatureEncoder):
             - TODO: Store value-to-integer mapping in fit_params
             - TODO: Handle unseen values in transform
         """
-        # TODO: Implement
-        pass
+        if X.empty:
+            raise ValueError("Cannot fit on empty DataFrame")
+        
+        if self.input_features is None:
+            self.input_features = list(X.columns)
+        
+        # Initialize mapping for each ordinal feature
+        self.fit_params['ordinal_mappings'] = {}
+        
+        for feature in self.ordinal_features:
+            if feature not in X.columns:
+                raise ValueError(f"Feature '{feature}' not found in X.columns")
+            
+            # Get unique values from the feature, sorted
+            unique_values = sorted(X[feature].dropna().unique())
+            
+            if self.keep_as_is:
+                # Keep original values as-is; just store them for reference
+                # This allows us to identify unseen values in transform
+                self.fit_params['ordinal_mappings'][feature] = {
+                    'unique_values': unique_values,
+                    'min_value': min(unique_values),
+                    'max_value': max(unique_values),
+                }
+            else:
+                # Map unique values to 0, 1, 2, ... preserving order
+                value_to_int = {val: i for i, val in enumerate(unique_values)}
+                self.fit_params['ordinal_mappings'][feature] = {
+                    'value_to_int': value_to_int,
+                    'unique_values': unique_values,
+                }
+        
+        self.fitted = True
+        return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """
@@ -270,8 +302,28 @@ class OrdinalEncoder(FeatureEncoder):
             - TODO: Keep non-ordinal features unchanged
             - TODO: Return DataFrame with same columns
         """
-        # TODO: Implement
-        pass
+        if not self.fitted:
+            raise ValueError("OrdinalEncoder has not been fitted yet. Call fit() first.")
+        
+        X_transformed = X.copy()
+        
+        for feature in self.ordinal_features:
+            if feature not in X.columns:
+                raise ValueError(f"Feature '{feature}' not found in X.columns")
+            
+            mapping_info = self.fit_params['ordinal_mappings'][feature]
+            
+            if self.keep_as_is:
+                # Keep original values, but warn or handle unknown values
+                # For ordinal features, unknown values are typically NaN from imputation
+                # which should have been handled before this step
+                X_transformed[feature] = X[feature]
+            else:
+                # Map values using learned mapping
+                value_to_int = mapping_info['value_to_int']
+                X_transformed[feature] = X[feature].map(value_to_int)
+        
+        return X_transformed
 
     def get_feature_names(self) -> List[str]:
         """
@@ -280,8 +332,10 @@ class OrdinalEncoder(FeatureEncoder):
         Returns:
             List of feature names (same as input)
         """
-        # TODO: Implement
-        pass
+        if not self.fitted:
+            raise ValueError("OrdinalEncoder has not been fitted yet. Call fit() first.")
+        
+        return self.input_features
 
 
 class OneHotEncoder(FeatureEncoder):
@@ -316,7 +370,7 @@ class OneHotEncoder(FeatureEncoder):
         input_features: Optional[List[str]] = None,
         categorical_features: Optional[List[str]] = None,
         drop_first: bool = True,
-        handle_unknown: str = "error",
+        handle_unknown: str = "ignore",
         sparse_output: bool = False,
     ):
         """
@@ -326,7 +380,7 @@ class OneHotEncoder(FeatureEncoder):
             input_features: List of all input feature names
             categorical_features: List of features to one-hot encode
             drop_first: Drop first category to avoid multicollinearity (default: True)
-            handle_unknown: 'error' or 'ignore' for unseen categories
+            handle_unknown: 'error' or 'ignore' for unseen categories (default: 'ignore')
             sparse_output: Return sparse matrix (default: False for DataFrames)
         """
         super().__init__(input_features)
@@ -345,8 +399,57 @@ class OneHotEncoder(FeatureEncoder):
             - TODO: Store category lists in fit_params['categories']
             - TODO: Compute output feature names
         """
-        # TODO: Implement
-        pass
+        if X.empty:
+            raise ValueError("Cannot fit on empty DataFrame")
+        
+        if self.input_features is None:
+            self.input_features = list(X.columns)
+        
+        # Initialize categories dictionary
+        self.fit_params['categories'] = {}
+        
+        for feature in self.categorical_features:
+            if feature not in X.columns:
+                raise ValueError(f"Feature '{feature}' not found in X.columns")
+            
+            # Get unique categories from the feature, sorted
+            unique_cats = sorted(X[feature].dropna().unique())
+            
+            if self.drop_first and len(unique_cats) > 0:
+                # Drop the first category to avoid multicollinearity
+                categories = unique_cats[1:]
+            else:
+                categories = unique_cats
+            
+            # Store the full list (for reference) and the categories to keep
+            self.fit_params['categories'][feature] = {
+                'all_categories': unique_cats,
+                'categories_to_keep': categories,
+            }
+        
+        # Compute output feature names
+        self._compute_output_feature_names()
+        
+        self.fitted = True
+        return self
+
+    def _compute_output_feature_names(self) -> None:
+        """
+        Compute the list of output feature names after one-hot encoding.
+        """
+        output_names = []
+        
+        for feature in self.input_features:
+            if feature in self.categorical_features:
+                # Add one-hot encoded columns for this categorical feature
+                categories = self.fit_params['categories'][feature]['categories_to_keep']
+                for cat in categories:
+                    output_names.append(f"{feature}_{cat}")
+            else:
+                # Keep non-categorical features as-is
+                output_names.append(feature)
+        
+        self.output_features = output_names
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """
@@ -359,8 +462,81 @@ class OneHotEncoder(FeatureEncoder):
             - TODO: Keep non-categorical features unchanged
             - TODO: Return DataFrame with one-hot features
         """
-        # TODO: Implement
-        pass
+        if not self.fitted:
+            raise ValueError("OneHotEncoder has not been fitted yet. Call fit() first.")
+        
+        X_transformed = pd.DataFrame()
+        
+        for feature in self.input_features:
+            if feature not in X.columns:
+                raise ValueError(f"Feature '{feature}' not found in X.columns")
+            
+            if feature in self.categorical_features:
+                # Create one-hot encoded columns for this categorical feature
+                categories = self.fit_params['categories'][feature]['categories_to_keep']
+                
+                for cat in categories:
+                    col_name = f"{feature}_{cat}"
+                    # Create binary column: 1 if feature == cat, else 0
+                    X_transformed[col_name] = (X[feature] == cat).astype(int)
+            else:
+                # Keep non-categorical features unchanged
+                X_transformed[feature] = X[feature]
+        
+        return X_transformed
+
+    def detect_unknown_categories(self, X: pd.DataFrame) -> Dict[str, Dict]:
+        """
+        Detect unknown categories in test data not seen during training.
+        
+        Identifies categorical values in the input data that were not present
+        in the training data used for fitting. Useful for understanding potential
+        data issues and model generalization challenges.
+        
+        Parameters:
+            X (pd.DataFrame): Data to check for unknown categories
+        
+        Returns:
+            Dict[str, Dict]: Dictionary mapping feature names to unknown category info.
+                Format: {
+                    'feature_name': {
+                        'unknown_categories': set of values not in training,
+                        'unknown_count': number of samples with unknown categories,
+                        'unknown_pct': percentage of samples with unknown values,
+                        'all_categories_seen': list of categories seen in training
+                    },
+                    ...
+                }
+                Returns empty dict if no unknown categories found.
+        
+        Raises:
+            ValueError: If encoder has not been fitted yet
+        """
+        if not self.fitted:
+            raise ValueError("OneHotEncoder has not been fitted yet. Call fit() first.")
+        
+        unknown_info = {}
+        
+        for feature in self.categorical_features:
+            if feature not in X.columns:
+                continue  # Skip if feature not in X
+            
+            training_categories = set(self.fit_params['categories'][feature]['all_categories'])
+            test_values = set(X[feature].dropna().unique())
+            unknown_cats = test_values - training_categories
+            
+            if unknown_cats:
+                unknown_count = (X[feature].isin(unknown_cats)).sum()
+                unknown_pct = 100.0 * unknown_count / len(X)
+                
+                unknown_info[feature] = {
+                    'unknown_categories': unknown_cats,
+                    'unknown_count': int(unknown_count),
+                    'unknown_pct': round(unknown_pct, 2),
+                    'all_categories_seen': sorted(list(training_categories)),
+                }
+        
+        return unknown_info
 
     def get_feature_names(self) -> List[str]:
         """
@@ -369,8 +545,10 @@ class OneHotEncoder(FeatureEncoder):
         Returns:
             List of feature names including new one-hot columns
         """
-        # TODO: Implement
-        pass
+        if not self.fitted:
+            raise ValueError("OneHotEncoder has not been fitted yet. Call fit() first.")
+        
+        return self.output_features
 
 
 class TargetEncoder(FeatureEncoder):

@@ -18,6 +18,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, List, Dict, Tuple
 import pandas as pd
 import numpy as np
+from sklearn.impute import KNNImputer as SklearnKNNImputer
 
 
 class ImputationStrategy(ABC):
@@ -259,8 +260,15 @@ class MeanImputation(ImputationStrategy):
             - TODO: For each column, compute mean (skip non-numeric)
             - TODO: Store means in fit_params['column_means']
         """
-        # TODO: Implement
-        pass
+        if X.empty:
+            raise ValueError("Training data X cannot be empty")
+        
+        # Compute means for all numeric columns
+        self.fit_params['column_means'] = X.select_dtypes(include=[np.number]).mean()
+        self.feature_names = list(X.columns)
+        self.fitted = True
+        
+        return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """
@@ -270,8 +278,18 @@ class MeanImputation(ImputationStrategy):
             - TODO: For each column with stored mean, fill NaN values
             - TODO: Return DataFrame with NaN filled
         """
-        # TODO: Implement
-        pass
+        if not self.fitted:
+            raise ValueError("MeanImputation strategy must be fit before transform")
+        
+        # Create a copy to avoid modifying input
+        X_imputed = X.copy()
+        
+        # Fill missing values in numeric columns with learned means
+        for column, mean_value in self.fit_params['column_means'].items():
+            if column in X_imputed.columns:
+                X_imputed[column].fillna(mean_value, inplace=True)
+        
+        return X_imputed
 
 
 class ModeImputation(ImputationStrategy):
@@ -305,8 +323,16 @@ class ModeImputation(ImputationStrategy):
             - TODO: Handle ties (multiple modes) by choosing first/most common
             - TODO: Store modes in fit_params['column_modes']
         """
-        # TODO: Implement
-        pass
+        if X.empty:
+            raise ValueError("Training data X cannot be empty")
+        
+        # Compute mode for all columns (numeric, categorical, mixed)
+        # mode() returns a DataFrame with modes; we extract the first mode for each column
+        self.fit_params['column_modes'] = X.mode(dropna=True).iloc[0] if len(X.mode(dropna=True)) > 0 else X.mode(dropna=False).iloc[0]
+        self.feature_names = list(X.columns)
+        self.fitted = True
+        
+        return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """
@@ -316,8 +342,18 @@ class ModeImputation(ImputationStrategy):
             - TODO: For each column with stored mode, fill NaN values
             - TODO: Return DataFrame with NaN filled
         """
-        # TODO: Implement
-        pass
+        if not self.fitted:
+            raise ValueError("ModeImputation strategy must be fit before transform")
+        
+        # Create a copy to avoid modifying input
+        X_imputed = X.copy()
+        
+        # Fill missing values in all columns with learned modes
+        for column, mode_value in self.fit_params['column_modes'].items():
+            if column in X_imputed.columns:
+                X_imputed[column].fillna(mode_value, inplace=True)
+        
+        return X_imputed
 
 
 class KNNImputation(ImputationStrategy):
@@ -373,26 +409,50 @@ class KNNImputation(ImputationStrategy):
         Prepare KNN structure on training data.
         
         Implementation notes:
-            - TODO: Store training data for neighbor lookup
-            - TODO: Build KDTree or similar structure for efficient neighbors
-            - TODO: Handle features with all missing values
+            - Store training data for neighbor lookup
+            - Build KDTree or similar structure for efficient neighbors
+            - Handle features with all missing values
         """
-        # TODO: Implement
-        pass
+        if X.empty:
+            raise ValueError("Training data X cannot be empty")
+        
+        # Store feature names
+        self.feature_names = list(X.columns)
+        
+        # Create and fit sklearn's KNNImputer
+        self.fit_params['knn_imputer'] = SklearnKNNImputer(
+            n_neighbors=self.n_neighbors,
+            weights=self.weights
+        )
+        
+        # Fit the KNN imputer on training data (numeric columns)
+        # KNNImputer handles numeric data; it will skip non-numeric columns
+        self.fit_params['knn_imputer'].fit(X)
+        self.fitted = True
+        
+        return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """
         Impute missing values using k-nearest neighbors.
         
         Implementation notes:
-            - TODO: For each row with missing values:
-            -   TODO: Find k nearest neighbors from training data
-            -   TODO: Compute mean/median of neighbors' values
-            -   TODO: Fill NaN with computed values
-            - TODO: Return imputed DataFrame
+            - For each row with missing values:
+            -   Find k nearest neighbors from training data
+            -   Compute mean/median of neighbors' values
+            -   Fill NaN with computed values
+            - Return imputed DataFrame
         """
-        # TODO: Implement
-        pass
+        if not self.fitted:
+            raise ValueError("KNNImputation strategy must be fit before transform")
+        
+        # Apply the fitted KNN imputer
+        X_imputed_array = self.fit_params['knn_imputer'].transform(X)
+        
+        # Convert back to DataFrame with original column names
+        X_imputed = pd.DataFrame(X_imputed_array, columns=X.columns, index=X.index)
+        
+        return X_imputed
 
 
 class MICEImputation(ImputationStrategy):

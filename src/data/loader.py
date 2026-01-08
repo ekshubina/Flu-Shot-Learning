@@ -12,10 +12,12 @@ See PROBLEM_DESCRIPTION.md for feature definitions and data specifications.
 """
 
 from abc import ABC, abstractmethod
-from typing import Tuple, Dict, Optional, List
+from typing import Tuple, Dict, Optional, List, Union
 from dataclasses import dataclass
+from pathlib import Path
 import pandas as pd
 import numpy as np
+from sklearn.model_selection import StratifiedKFold
 
 
 @dataclass
@@ -325,8 +327,35 @@ class CSVDataLoader(DataLoader):
             FileNotFoundError: If CSV files not found
             ValueError: If files are missing required columns
         """
-        # TODO: Implement file reading and merging
-        pass
+        # Return cached data if available
+        if self._X_train is not None and self._y_train is not None:
+            return self._X_train, self._y_train
+        
+        # Load training features
+        feat_path = Path(self.config.train_features_path)
+        if not feat_path.exists():
+            raise FileNotFoundError(f"Training features file not found: {feat_path}")
+        
+        X_train = pd.read_csv(feat_path)
+        if 'respondent_id' not in X_train.columns:
+            raise ValueError(f"respondent_id column not found in {feat_path}")
+        
+        # Load training labels
+        label_path = Path(self.config.train_labels_path)
+        if not label_path.exists():
+            raise FileNotFoundError(f"Training labels file not found: {label_path}")
+        
+        y_train = pd.read_csv(label_path)
+        if 'respondent_id' not in y_train.columns:
+            raise ValueError(f"respondent_id column not found in {label_path}")
+        if 'h1n1_vaccine' not in y_train.columns or 'seasonal_vaccine' not in y_train.columns:
+            raise ValueError(f"Target columns (h1n1_vaccine, seasonal_vaccine) not found in {label_path}")
+        
+        # Cache and return
+        self._X_train = X_train
+        self._y_train = y_train
+        
+        return self._X_train, self._y_train
 
     def load_test(self) -> Tuple[pd.DataFrame, pd.Series]:
         """
@@ -350,8 +379,23 @@ class CSVDataLoader(DataLoader):
             FileNotFoundError: If CSV file not found
             ValueError: If file is missing respondent_id column
         """
-        # TODO: Implement file reading
-        pass
+        # Return cached data if available
+        if self._X_test is not None:
+            return self._X_test, self._X_test['respondent_id']
+        
+        # Load test features
+        test_path = Path(self.config.test_features_path)
+        if not test_path.exists():
+            raise FileNotFoundError(f"Test features file not found: {test_path}")
+        
+        X_test = pd.read_csv(test_path)
+        if 'respondent_id' not in X_test.columns:
+            raise ValueError(f"respondent_id column not found in {test_path}")
+        
+        # Cache and return
+        self._X_test = X_test
+        
+        return self._X_test, self._X_test['respondent_id']
 
     def create_splits(
         self,
@@ -390,8 +434,48 @@ class CSVDataLoader(DataLoader):
         Raises:
             ValueError: If n_folds < 2 or training data is invalid
         """
-        # TODO: Implement stratified k-fold splitting
-        pass
+        # Load data if not provided
+        if X_train is None or y_train is None:
+            X_train, y_train = self.load_train()
+        
+        X_test, respondent_ids_test = self.load_test()
+        
+        # Validate n_folds
+        if self.config.cv_folds < 2:
+            raise ValueError(f"cv_folds must be >= 2, got {self.config.cv_folds}")
+        
+        # Create combined stratification column (4 classes for all label combinations)
+        # combined_label = h1n1_vaccine + 2*seasonal_vaccine
+        # (0,0) -> 0, (1,0) -> 1, (0,1) -> 2, (1,1) -> 3
+        combined_labels = y_train['h1n1_vaccine'] + 2 * y_train['seasonal_vaccine']
+        
+        # Perform stratified k-fold split
+        skf = StratifiedKFold(
+            n_splits=self.config.cv_folds,
+            shuffle=True,
+            random_state=self.config.random_seed
+        )
+        
+        splits = []
+        for train_idx, val_idx in skf.split(X_train, combined_labels):
+            # Get fold data
+            X_train_fold = X_train.iloc[train_idx].reset_index(drop=True)
+            y_train_fold = y_train.iloc[train_idx].reset_index(drop=True)
+            X_val_fold = X_train.iloc[val_idx].reset_index(drop=True)
+            y_val_fold = y_train.iloc[val_idx].reset_index(drop=True)
+            
+            # Create DataSplit
+            split = DataSplit(
+                X_train=X_train_fold,
+                y_train=y_train_fold,
+                X_val=X_val_fold,
+                y_val=y_val_fold,
+                X_test=X_test,
+                respondent_ids_test=respondent_ids_test,
+            )
+            splits.append(split)
+        
+        return splits
 
     def validate(self) -> DataValidationResult:
         """
@@ -433,5 +517,96 @@ class CSVDataLoader(DataLoader):
             >>> for warning in result.warnings:
             ...     print(f"WARNING: {warning}")
         """
-        # TODO: Implement comprehensive data validation
-        pass
+        issues = []
+        warnings = []
+        
+        # Try loading data
+        try:
+            X_train, y_train = self.load_train()
+            X_test, _ = self.load_test()
+        except FileNotFoundError as e:
+            issues.append(f"File not found: {e}")
+            return DataValidationResult(
+                is_valid=False,
+                n_samples=0,
+                n_features=0,
+                missing_by_feature={},
+                class_distribution={},
+                feature_types={},
+                issues=issues,
+                warnings=warnings,
+            )
+        
+        # Check feature counts (35 features + respondent_id = 36 columns)
+        n_features = len(X_train.columns) - 1  # Exclude respondent_id
+        if n_features != 35:
+            issues.append(f"Expected 35 features + respondent_id, got {len(X_train.columns)} columns")
+        
+        # Check target columns
+        for target in self.get_target_names():
+            if target not in y_train.columns:
+                issues.append(f"Target column '{target}' not found in labels")
+        
+        # Check respondent_id uniqueness in features
+        if X_train['respondent_id'].nunique() != len(X_train):
+            issues.append("Non-unique respondent_id values in training features")
+        if y_train['respondent_id'].nunique() != len(y_train):
+            issues.append("Non-unique respondent_id values in training labels")
+        if X_test['respondent_id'].nunique() != len(X_test):
+            issues.append("Non-unique respondent_id values in test features")
+        
+        # Check that train features and labels align
+        if len(X_train) != len(y_train):
+            issues.append(f"Train features ({len(X_train)}) and labels ({len(y_train)}) have different lengths")
+        
+        # Check target value ranges (should be 0 or 1)
+        for target in self.get_target_names():
+            if target in y_train.columns:
+                invalid_values = y_train[~y_train[target].isin([0, 1, np.nan])]
+                if len(invalid_values) > 0:
+                    issues.append(f"Non-binary values found in {target}")
+        
+        # Compute missing values
+        missing_by_feature = {}
+        for col in X_train.columns:
+            if col != 'respondent_id':
+                pct_missing = X_train[col].isna().sum() / len(X_train) * 100
+                missing_by_feature[col] = pct_missing
+                if pct_missing > 50:
+                    warnings.append(f"{col}: {pct_missing:.1f}% missing")
+        
+        # Compute class distribution
+        class_distribution = {}
+        for target in self.get_target_names():
+            if target in y_train.columns:
+                dist = y_train[target].value_counts(normalize=True) * 100
+                class_distribution[target] = {int(k): float(v) for k, v in dist.items()}
+        
+        # Infer feature types
+        feature_types = {}
+        for col in X_train.columns:
+            if col != 'respondent_id':
+                if X_train[col].dtype == 'object':
+                    feature_types[col] = 'categorical'
+                elif X_train[col].dtype in ['int64', 'int32']:
+                    # Check if it's actually categorical (low cardinality)
+                    if X_train[col].nunique() <= 10:
+                        feature_types[col] = 'ordinal'
+                    else:
+                        feature_types[col] = 'numeric'
+                else:
+                    feature_types[col] = 'numeric'
+        
+        # Determine overall validity
+        is_valid = len(issues) == 0
+        
+        return DataValidationResult(
+            is_valid=is_valid,
+            n_samples=len(X_train),
+            n_features=n_features,
+            missing_by_feature=missing_by_feature,
+            class_distribution=class_distribution,
+            feature_types=feature_types,
+            issues=issues,
+            warnings=warnings,
+        )

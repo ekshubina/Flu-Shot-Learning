@@ -234,8 +234,24 @@ class CSVExperimentLogger(ExperimentTracker):
     
     def _initialize_csv(self) -> None:
         """Create CSV file with headers if it doesn't exist."""
-        # TODO: Implement
-        pass
+        if self.log_path.exists():
+            return
+        
+        # Create parent directories if they don't exist
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Create CSV with headers
+        fieldnames = [
+            'run_id', 'timestamp', 'model_type', 'config_json',
+            'hyperparameters_json', 'auroc_h1n1', 'auroc_seasonal',
+            'auroc_mean', 'h1n1_sensitivity', 'h1n1_specificity',
+            'h1n1_ppv', 'seasonal_sensitivity', 'seasonal_specificity',
+            'seasonal_ppv', 'h1n1_ece', 'seasonal_ece', 'notes', 'status'
+        ]
+        
+        with open(self.log_path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
     
     def log_run(
         self,
@@ -255,8 +271,49 @@ class CSVExperimentLogger(ExperimentTracker):
             - TODO: Append row to CSV file
             - TODO: Return the created RunRecord
         """
-        # TODO: Implement
-        raise NotImplementedError("Subclass must implement log_run()")
+        # Create timestamp
+        timestamp = datetime.now().isoformat()
+        
+        # Serialize config and hyperparameters to JSON
+        config_json = json.dumps(config)
+        hyperparameters_json = json.dumps(hyperparameters)
+        
+        # Create RunRecord with metrics
+        record = RunRecord(
+            run_id=run_id,
+            timestamp=timestamp,
+            model_type=model_type,
+            config_json=config_json,
+            hyperparameters_json=hyperparameters_json,
+            auroc_h1n1=metrics.get('auroc_h1n1'),
+            auroc_seasonal=metrics.get('auroc_seasonal'),
+            auroc_mean=metrics.get('auroc_mean'),
+            h1n1_sensitivity=metrics.get('h1n1_sensitivity'),
+            h1n1_specificity=metrics.get('h1n1_specificity'),
+            h1n1_ppv=metrics.get('h1n1_ppv'),
+            seasonal_sensitivity=metrics.get('seasonal_sensitivity'),
+            seasonal_specificity=metrics.get('seasonal_specificity'),
+            seasonal_ppv=metrics.get('seasonal_ppv'),
+            h1n1_ece=metrics.get('h1n1_ece'),
+            seasonal_ece=metrics.get('seasonal_ece'),
+            notes=notes,
+            status='completed'
+        )
+        
+        # Append to CSV file
+        fieldnames = [
+            'run_id', 'timestamp', 'model_type', 'config_json',
+            'hyperparameters_json', 'auroc_h1n1', 'auroc_seasonal',
+            'auroc_mean', 'h1n1_sensitivity', 'h1n1_specificity',
+            'h1n1_ppv', 'seasonal_sensitivity', 'seasonal_specificity',
+            'seasonal_ppv', 'h1n1_ece', 'seasonal_ece', 'notes', 'status'
+        ]
+        
+        with open(self.log_path, 'a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writerow(asdict(record))
+        
+        return record
     
     def get_run_by_id(self, run_id: str) -> Optional[RunRecord]:
         """
@@ -268,8 +325,17 @@ class CSVExperimentLogger(ExperimentTracker):
             - TODO: Parse RunRecord from row
             - TODO: Return RunRecord or None if not found
         """
-        # TODO: Implement
-        pass
+        if not self.log_path.exists():
+            return None
+        
+        df = pd.read_csv(self.log_path)
+        matching_rows = df[df['run_id'] == run_id]
+        
+        if matching_rows.empty:
+            return None
+        
+        row = matching_rows.iloc[0]
+        return self._row_to_record(row)
     
     def get_all_runs(self) -> List[RunRecord]:
         """
@@ -280,8 +346,11 @@ class CSVExperimentLogger(ExperimentTracker):
             - TODO: Parse each row as RunRecord
             - TODO: Return list of RunRecords
         """
-        # TODO: Implement
-        raise NotImplementedError("Subclass must implement get_all_runs()")
+        if not self.log_path.exists():
+            return []
+        
+        df = pd.read_csv(self.log_path)
+        return [self._row_to_record(row) for _, row in df.iterrows()]
     
     def rank_by_auroc(self, limit: Optional[int] = None) -> List[RunRecord]:
         """
@@ -294,8 +363,21 @@ class CSVExperimentLogger(ExperimentTracker):
             - TODO: Apply limit if provided
             - TODO: Return sorted list
         """
-        # TODO: Implement
-        raise NotImplementedError("Subclass must implement rank_by_auroc()")
+        runs = self.get_all_runs()
+        
+        # Filter to completed runs with auroc_mean
+        completed_runs = [
+            r for r in runs 
+            if r.status == 'completed' and r.auroc_mean is not None
+        ]
+        
+        # Sort by auroc_mean descending
+        sorted_runs = sorted(completed_runs, key=lambda r: r.auroc_mean, reverse=True)
+        
+        if limit is not None:
+            sorted_runs = sorted_runs[:limit]
+        
+        return sorted_runs
     
     def filter_by_model_type(self, model_type: str) -> List[RunRecord]:
         """
@@ -306,8 +388,8 @@ class CSVExperimentLogger(ExperimentTracker):
             - TODO: Filter to matching model_type
             - TODO: Return filtered list
         """
-        # TODO: Implement
-        raise NotImplementedError("Subclass must implement filter_by_model_type()")
+        runs = self.get_all_runs()
+        return [r for r in runs if r.model_type == model_type]
     
     def filter_by_auroc_range(
         self, min_auroc: float, max_auroc: float
@@ -320,8 +402,12 @@ class CSVExperimentLogger(ExperimentTracker):
             - TODO: Filter to runs with auroc_mean in [min_auroc, max_auroc]
             - TODO: Return filtered list
         """
-        # TODO: Implement
-        raise NotImplementedError("Subclass must implement filter_by_auroc_range()")
+        runs = self.get_all_runs()
+        return [
+            r for r in runs 
+            if r.auroc_mean is not None 
+            and min_auroc <= r.auroc_mean <= max_auroc
+        ]
     
     def export(self, format: str = 'dataframe') -> Any:
         """
@@ -334,8 +420,26 @@ class CSVExperimentLogger(ExperimentTracker):
             - TODO: If format='csv', return raw CSV string
             - TODO: Raise ValueError for unknown format
         """
-        # TODO: Implement
-        pass
+        if not self.log_path.exists():
+            if format == 'dataframe':
+                return pd.DataFrame()
+            elif format == 'json':
+                return json.dumps([])
+            elif format == 'csv':
+                return ""
+            else:
+                raise ValueError(f"Unknown export format: {format}")
+        
+        if format == 'dataframe':
+            return pd.read_csv(self.log_path)
+        elif format == 'json':
+            df = pd.read_csv(self.log_path)
+            return df.to_json(orient='records')
+        elif format == 'csv':
+            with open(self.log_path, 'r') as f:
+                return f.read()
+        else:
+            raise ValueError(f"Unknown export format: {format}")
     
     def update_run_status(self, run_id: str, status: str) -> None:
         """
@@ -351,8 +455,50 @@ class CSVExperimentLogger(ExperimentTracker):
             - TODO: Update status column
             - TODO: Write back to CSV
         """
-        # TODO: Implement
-        pass
+        if not self.log_path.exists():
+            return
+        
+        df = pd.read_csv(self.log_path)
+        df.loc[df['run_id'] == run_id, 'status'] = status
+        df.to_csv(self.log_path, index=False)
+    
+    @staticmethod
+    def _row_to_record(row: Any) -> RunRecord:
+        """
+        Convert a DataFrame row to a RunRecord.
+        
+        Parameters:
+            row: pandas Series representing one row
+        
+        Returns:
+            RunRecord object
+        """
+        # Handle NaN values by converting to None
+        def to_none(val):
+            if pd.isna(val):
+                return None
+            return val
+        
+        return RunRecord(
+            run_id=row['run_id'],
+            timestamp=row['timestamp'],
+            model_type=row['model_type'],
+            config_json=row['config_json'],
+            hyperparameters_json=row['hyperparameters_json'],
+            auroc_h1n1=to_none(row['auroc_h1n1']),
+            auroc_seasonal=to_none(row['auroc_seasonal']),
+            auroc_mean=to_none(row['auroc_mean']),
+            h1n1_sensitivity=to_none(row['h1n1_sensitivity']),
+            h1n1_specificity=to_none(row['h1n1_specificity']),
+            h1n1_ppv=to_none(row['h1n1_ppv']),
+            seasonal_sensitivity=to_none(row['seasonal_sensitivity']),
+            seasonal_specificity=to_none(row['seasonal_specificity']),
+            seasonal_ppv=to_none(row['seasonal_ppv']),
+            h1n1_ece=to_none(row['h1n1_ece']),
+            seasonal_ece=to_none(row['seasonal_ece']),
+            notes=to_none(row['notes']),
+            status=row['status']
+        )
 
 
 def create_run_id() -> str:
@@ -369,5 +515,7 @@ def create_run_id() -> str:
         - TODO: Format as YYYYMMDD_HHMMSS_MICROSECONDS
         - TODO: Return as string
     """
-    # TODO: Implement
-    raise NotImplementedError("create_run_id() not yet implemented")
+    now = datetime.now()
+    timestamp_str = now.strftime("%Y%m%d_%H%M%S")
+    microseconds = now.microsecond
+    return f"run_{timestamp_str}_{microseconds}"

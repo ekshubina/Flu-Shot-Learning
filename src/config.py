@@ -8,8 +8,8 @@ from dictionaries or YAML files and composed into a top-level PipelineConfig.
 See SYSTEM_DESIGN.md for architecture overview and expected parameter values.
 """
 
-from dataclasses import dataclass, field, asdict
-from typing import Dict, List, Optional, Any
+from dataclasses import dataclass, field, asdict, fields
+from typing import Dict, List, Optional, Any, Union
 from pathlib import Path
 import json
 
@@ -25,20 +25,20 @@ class DataConfig:
         test_features_path: Path to test features CSV
         submission_format_path: Path to submission format template CSV
         data_dir: Root directory containing data files (used if paths are relative)
-        n_folds: Number of cross-validation folds (default: 5)
+        cv_folds: Number of cross-validation folds (default: 5)
         random_seed: Random seed for reproducibility (default: 42)
         stratify: Whether to use stratified k-fold (default: True)
-        val_split: Validation set fraction for holdout validation (default: 0.2)
+        test_size: Test/validation set fraction for holdout validation (default: 0.2)
     """
     train_features_path: str = "data/training_set_features.csv"
     train_labels_path: str = "data/training_set_labels.csv"
     test_features_path: str = "data/test_set_features.csv"
     submission_format_path: str = "data/submission_format.csv"
     data_dir: Optional[str] = None
-    n_folds: int = 5
+    cv_folds: int = 5
     random_seed: int = 42
     stratify: bool = True
-    val_split: float = 0.2
+    test_size: float = 0.2
 
 
 @dataclass
@@ -67,6 +67,7 @@ class EncodingConfig:
     Configuration for feature encoding strategies.
     
     Attributes:
+        strategies: Dictionary mapping feature groups to encoding strategies
         ordinal_features: List of feature names to encode as ordinal (preserve order)
         categorical_features: List of feature names to encode categorically
         binary_features: List of binary features (already 0/1, no encoding needed)
@@ -76,7 +77,9 @@ class EncodingConfig:
         polynomial_degree: Degree for polynomial features (default: 2, 0 to disable)
         drop_first_onehot: Drop first category in one-hot to avoid multicollinearity (default: True)
         target_encoding_smoothing: Smoothing parameter for target encoding (default: 1.0)
+        drop_features: List of features to drop before encoding (default: [])
     """
+    strategies: Dict[str, Any] = field(default_factory=dict)
     ordinal_features: List[str] = field(default_factory=lambda: [
         "h1n1_concern", "h1n1_knowledge",
         "opinion_h1n1_vacc_effective", "opinion_h1n1_risk",
@@ -102,6 +105,7 @@ class EncodingConfig:
     polynomial_degree: int = 0
     drop_first_onehot: bool = True
     target_encoding_smoothing: float = 1.0
+    drop_features: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -133,6 +137,7 @@ class TrainingConfig:
     
     Attributes:
         cv_strategy: Cross-validation strategy (stratified_kfold, kfold, time_series)
+        cv_folds: Number of cross-validation folds (default: 5)
         test_size: Test set fraction for each fold (default: 0.2)
         use_smote: Whether to apply SMOTE for class imbalance (default: False)
         smote_ratio: Ratio of minority to majority class after SMOTE (default: 0.5)
@@ -143,8 +148,10 @@ class TrainingConfig:
         hyperparameter_search: Whether to perform hyperparameter search (default: False)
         search_strategy: Hyperparameter search strategy (grid, random, bayesian)
         search_cv_folds: CV folds for hyperparameter search (default: 3)
+        class_weight_strategy: Class weight strategy (default: balanced)
     """
     cv_strategy: str = "stratified_kfold"
+    cv_folds: int = 5
     test_size: float = 0.2
     use_smote: bool = False
     smote_ratio: float = 0.5
@@ -155,6 +162,7 @@ class TrainingConfig:
     hyperparameter_search: bool = False
     search_strategy: str = "grid"
     search_cv_folds: int = 3
+    class_weight_strategy: str = "balanced"
 
 
 @dataclass
@@ -166,11 +174,20 @@ class CalibrationConfig:
         method: Calibration method to use
                (none, platt_scaling, isotonic, temperature_scaling)
         calibration_cv_folds: Number of folds for calibration fitting (default: 5)
+        calibration_folds: Alternative name for calibration_cv_folds (from YAML)
         smooth_calibration: Whether to use smoothing in isotonic calibration (default: False)
     """
     method: str = "none"
     calibration_cv_folds: int = 5
+    calibration_folds: Optional[int] = None
     smooth_calibration: bool = False
+    
+    def __post_init__(self):
+        """Normalize field names (handle both calibration_folds and calibration_cv_folds)."""
+        if self.calibration_folds is not None and self.calibration_cv_folds == 5:
+            self.calibration_cv_folds = self.calibration_folds
+        elif self.calibration_folds is None and self.calibration_cv_folds != 5:
+            self.calibration_folds = self.calibration_cv_folds
 
 
 @dataclass
@@ -197,28 +214,68 @@ class EvaluationConfig:
 
 
 @dataclass
+class PredictionConfig:
+    """
+    Configuration for test set prediction and submission generation.
+    
+    Attributes:
+        output_dir: Directory to save submission CSV (default: "./submissions/")
+        output_filename: Filename for submission CSV (default: "submission_baseline.csv")
+        validate_submission: Whether to validate submission format (default: True)
+    """
+    output_dir: str = "./submissions/"
+    output_filename: str = "submission_baseline.csv"
+    validate_submission: bool = True
+
+
+@dataclass
+class LoggingConfig:
+    """
+    Configuration for logging throughout the pipeline.
+    
+    Attributes:
+        level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL, default: INFO)
+        log_file: Path to log file (default: "logs/pipeline.log")
+        format: Log format string (default: standard format)
+    """
+    level: str = "INFO"
+    log_file: str = "logs/pipeline.log"
+    format: str = "[%(asctime)s] %(name)s - %(levelname)s - %(message)s"
+
+
+@dataclass
 class TrackingConfig:
     """
     Configuration for experiment tracking and logging.
     
     Attributes:
+        enabled: Whether tracking is enabled (default: True)
         tracker_type: Type of experiment tracker (csv, mlflow, wandb, none)
         log_dir: Directory to store experiment logs (default: "logs/")
+        log_path: Alternative name for log file path (from YAML)
         log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
+        log_file: Log file path (default: "logs/pipeline.log")
         log_to_file: Whether to log to file in addition to console (default: True)
         log_frequency: How often to log during training (default: 100)
+        format: Log format string (default: standard format)
         track_hyperparameters: Whether to log hyperparameters (default: True)
         track_metrics: Whether to log metrics (default: True)
         track_data_summary: Whether to log data summaries (default: True)
+        log_metrics: List of specific metrics to track (default: [])
     """
+    enabled: bool = True
     tracker_type: str = "csv"
     log_dir: str = "logs/"
+    log_path: Optional[str] = None
     log_level: str = "INFO"
+    log_file: str = "logs/pipeline.log"
     log_to_file: bool = True
     log_frequency: int = 100
+    format: str = "[%(asctime)s] %(name)s - %(levelname)s - %(message)s"
     track_hyperparameters: bool = True
     track_metrics: bool = True
     track_data_summary: bool = True
+    log_metrics: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -236,7 +293,9 @@ class PipelineConfig:
         training: TrainingConfig instance
         calibration: CalibrationConfig instance
         evaluation: EvaluationConfig instance
+        prediction: PredictionConfig instance
         tracking: TrackingConfig instance
+        logging: LoggingConfig instance
     """
     name: str = "default_pipeline"
     description: str = "Default ML pipeline configuration"
@@ -247,7 +306,9 @@ class PipelineConfig:
     training: TrainingConfig = field(default_factory=TrainingConfig)
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
+    prediction: PredictionConfig = field(default_factory=PredictionConfig)
     tracking: TrackingConfig = field(default_factory=TrackingConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to dictionary."""
@@ -272,23 +333,31 @@ class PipelineConfig:
         training_dict = config_dict.get("training", {})
         calibration_dict = config_dict.get("calibration", {})
         evaluation_dict = config_dict.get("evaluation", {})
+        prediction_dict = config_dict.get("prediction", {})
         tracking_dict = config_dict.get("tracking", {})
+        logging_dict = config_dict.get("logging", {})
+        
+        # Helper function to filter out unexpected kwargs
+        def filter_dict(d, expected_fields):
+            return {k: v for k, v in d.items() if k in expected_fields}
         
         return cls(
             name=config_dict.get("name", "default_pipeline"),
             description=config_dict.get("description", "Default ML pipeline configuration"),
-            data=DataConfig(**data_dict) if data_dict else DataConfig(),
-            imputation=ImputationConfig(**imputation_dict) if imputation_dict else ImputationConfig(),
-            encoding=EncodingConfig(**encoding_dict) if encoding_dict else EncodingConfig(),
-            model=ModelConfig(**model_dict) if model_dict else ModelConfig(),
-            training=TrainingConfig(**training_dict) if training_dict else TrainingConfig(),
-            calibration=CalibrationConfig(**calibration_dict) if calibration_dict else CalibrationConfig(),
-            evaluation=EvaluationConfig(**evaluation_dict) if evaluation_dict else EvaluationConfig(),
-            tracking=TrackingConfig(**tracking_dict) if tracking_dict else TrackingConfig(),
+            data=DataConfig(**filter_dict(data_dict, {f.name for f in DataConfig.__dataclass_fields__.values()})) if data_dict else DataConfig(),
+            imputation=ImputationConfig(**filter_dict(imputation_dict, {f.name for f in ImputationConfig.__dataclass_fields__.values()})) if imputation_dict else ImputationConfig(),
+            encoding=EncodingConfig(**filter_dict(encoding_dict, {f.name for f in EncodingConfig.__dataclass_fields__.values()})) if encoding_dict else EncodingConfig(),
+            model=ModelConfig(**filter_dict(model_dict, {f.name for f in ModelConfig.__dataclass_fields__.values()})) if model_dict else ModelConfig(),
+            training=TrainingConfig(**filter_dict(training_dict, {f.name for f in TrainingConfig.__dataclass_fields__.values()})) if training_dict else TrainingConfig(),
+            calibration=CalibrationConfig(**filter_dict(calibration_dict, {f.name for f in CalibrationConfig.__dataclass_fields__.values()})) if calibration_dict else CalibrationConfig(),
+            evaluation=EvaluationConfig(**filter_dict(evaluation_dict, {f.name for f in EvaluationConfig.__dataclass_fields__.values()})) if evaluation_dict else EvaluationConfig(),
+            prediction=PredictionConfig(**filter_dict(prediction_dict, {f.name for f in PredictionConfig.__dataclass_fields__.values()})) if prediction_dict else PredictionConfig(),
+            tracking=TrackingConfig(**filter_dict(tracking_dict, {f.name for f in TrackingConfig.__dataclass_fields__.values()})) if tracking_dict else TrackingConfig(),
+            logging=LoggingConfig(**filter_dict(logging_dict, {f.name for f in LoggingConfig.__dataclass_fields__.values()})) if logging_dict else LoggingConfig(),
         )
 
     @classmethod
-    def from_yaml(cls, yaml_path: str) -> "PipelineConfig":
+    def from_yaml(cls, yaml_path: Union[str, Path]) -> "PipelineConfig":
         """
         Load configuration from YAML file.
         
@@ -315,9 +384,8 @@ class PipelineConfig:
             config_dict = yaml.safe_load(f)
         
         return cls.from_dict(config_dict)
-
     @classmethod
-    def from_json(cls, json_path: str) -> "PipelineConfig":
+    def from_json(cls, json_path: Union[str, Path]) -> "PipelineConfig":
         """
         Load configuration from JSON file.
         
@@ -339,7 +407,7 @@ class PipelineConfig:
         
         return cls.from_dict(config_dict)
 
-    def to_yaml(self, yaml_path: str) -> None:
+    def to_yaml(self, yaml_path: Union[str, Path]) -> None:
         """
         Save configuration to YAML file.
         
@@ -360,7 +428,7 @@ class PipelineConfig:
         with open(yaml_path, 'w') as f:
             yaml.dump(self.to_dict(), f, default_flow_style=False)
 
-    def to_json(self, json_path: str) -> None:
+    def to_json(self, json_path: Union[str, Path]) -> None:
         """
         Save configuration to JSON file.
         
@@ -374,7 +442,7 @@ class PipelineConfig:
             json.dump(self.to_dict(), f, indent=2)
 
 
-def load_config(config_path: str) -> PipelineConfig:
+def load_config(config_path: Union[str, Path]) -> PipelineConfig:
     """
     Load configuration from file (auto-detects format from extension).
     

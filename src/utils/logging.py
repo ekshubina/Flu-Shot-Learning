@@ -30,6 +30,7 @@ Reference: SYSTEM_DESIGN.md - Component 9: Utilities
 import logging
 from typing import Optional
 from pathlib import Path
+import sys
 
 
 def setup_logging(
@@ -79,8 +80,37 @@ def setup_logging(
         - TODO: Clear any existing handlers first
         - TODO: Set propagate=True for all loggers
     """
-    # TODO: Implement
-    pass
+    # Get root logger
+    root_logger = logging.getLogger()
+    
+    # Convert level string to logging constant
+    log_level = getattr(logging, level.upper(), logging.INFO)
+    root_logger.setLevel(logging.DEBUG)  # Root logger at DEBUG; handlers filter
+    
+    # Clear existing handlers
+    root_logger.handlers = []
+    
+    # Default format string
+    if format_string is None:
+        format_string = '[%(asctime)s] %(name)s - %(levelname)s - %(message)s'
+    
+    # Create formatter
+    formatter = logging.Formatter(format_string)
+    
+    # Console handler (INFO level by default)
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(log_level)
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+    
+    # File handler (if log_file provided)
+    if log_file:
+        log_path = Path(log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_path)
+        file_handler.setLevel(logging.DEBUG)  # File gets all levels
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -114,8 +144,7 @@ def get_logger(name: str) -> logging.Logger:
         - TODO: Return the logger object
         - TODO: Do NOT set level on individual logger (inherit from root)
     """
-    # TODO: Implement
-    raise NotImplementedError("get_logger() not yet implemented")
+    return logging.getLogger(name)
 
 
 def configure_logger_file_handler(
@@ -147,8 +176,22 @@ def configure_logger_file_handler(
         - TODO: Add formatter to handler
         - TODO: Add handler to logger
     """
-    # TODO: Implement
-    pass
+    # Create parent directories if needed
+    log_path = Path(log_file)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Create file handler
+    file_handler = logging.FileHandler(log_path)
+    file_handler.setLevel(getattr(logging, level.upper(), logging.DEBUG))
+    
+    # Create formatter (match root logger format)
+    formatter = logging.Formatter(
+        '[%(asctime)s] %(name)s - %(levelname)s - %(message)s'
+    )
+    file_handler.setFormatter(formatter)
+    
+    # Add handler to logger
+    logger.addHandler(file_handler)
 
 
 class LoggingContext:
@@ -188,10 +231,11 @@ class LoggingContext:
     
     def __enter__(self) -> 'LoggingContext':
         """Enter context: save original level and set new level."""
-        # TODO: Implement
-        raise NotImplementedError("LoggingContext.__enter__() not yet implemented")
+        self.original_level = self.logger.level
+        self.logger.setLevel(getattr(logging, self.level.upper(), logging.INFO))
+        return self
     
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Exit context: restore original level."""
-        # TODO: Implement
-        pass
+        if self.original_level is not None:
+            self.logger.setLevel(self.original_level)

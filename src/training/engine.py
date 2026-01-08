@@ -21,6 +21,11 @@ from typing import Optional, Dict, List, Tuple, Any
 from dataclasses import dataclass
 import pandas as pd
 import numpy as np
+from sklearn.model_selection import StratifiedKFold
+import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -134,6 +139,8 @@ class TrainingEngine:
         self,
         X: pd.DataFrame,
         y: pd.DataFrame,
+        preprocessor: Optional[Any] = None,
+        model_factory: Optional[Any] = None,
         return_train_preds: bool = False,
     ) -> CVResults:
         """
@@ -145,6 +152,8 @@ class TrainingEngine:
         Args:
             X: Training features (n_samples, n_features)
             y: Training labels (n_samples, 2) for multilabel targets
+            preprocessor: PreprocessingPipeline instance for imputation and encoding
+            model_factory: ModelFactory for creating models
             return_train_preds: If True, include training predictions in results
             
         Returns:
@@ -157,22 +166,172 @@ class TrainingEngine:
             >>> for fold_result in cv_results.fold_results:
             ...     print(f"Fold {fold_result.fold_id}: {fold_result.metrics}")
         
-        Implementation notes:
-            - TODO: Create stratified k-fold splits
-            - TODO: For each fold:
-            -   TODO: Get fold train/val indices
-            -   TODO: Create model instance
-            -   TODO: Apply class weighting or SMOTE if configured
-            -   TODO: Train model with early stopping if configured
-            -   TODO: Compute validation predictions (probabilities)
-            -   TODO: Compute validation metrics (AUROC, accuracy, etc.)
-            -   TODO: Store FoldResults
-            - TODO: Compute mean and std metrics across folds
-            - TODO: Identify best fold
-            - TODO: Return CVResults with all fold results
+        Implementation:
+            - Create stratified k-fold splits based on combined labels
+            - For each fold:
+              - Get fold train/val indices
+              - Fit preprocessing on training fold only (no data leakage)
+              - Train h1n1 model on training fold
+              - Train seasonal model on training fold
+              - Generate validation predictions for both models
+              - Log fold timing and class distributions
+            - Aggregate metrics across folds
+            - Return CVResults with all fold results
         """
-        # TODO: Implement
-        pass
+        from src.utils.helpers import create_stratification_column
+        from src.models.factory import ModelFactory
+        from src.preprocessing import PreprocessingPipeline
+        
+        # Store training data
+        self.X = X
+        self.y = y
+        
+        # Extract h1n1 and seasonal labels
+        h1n1_labels = y.iloc[:, 0] if isinstance(y, pd.DataFrame) else y[0]
+        seasonal_labels = y.iloc[:, 1] if isinstance(y, pd.DataFrame) else y[1]
+        
+        # Create stratification column: h1n1 + 2*seasonal (4 classes)
+        strat_column = create_stratification_column(h1n1_labels, seasonal_labels)
+        
+        # Get number of folds from config
+        n_splits = self.training_config.get("cv_folds", 5) if isinstance(self.training_config, dict) else getattr(self.training_config, "cv_folds", 5)
+        random_state = self.training_config.get("random_seed", 42) if isinstance(self.training_config, dict) else getattr(self.training_config, "random_seed", 42)
+        
+        # Create StratifiedKFold splitter
+        skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+        
+        # Use model factory if provided
+        if model_factory is None:
+            model_factory = ModelFactory
+        
+        fold_results = []
+        fold_metrics_list = []
+        val_indices_list = []
+        val_proba_h1n1_list = []
+        val_proba_seasonal_list = []
+        val_true_h1n1_list = []
+        val_true_seasonal_list = []
+        
+        logger.info(f"Starting {n_splits}-fold stratified cross-validation")
+        logger.info(f"Total samples: {len(X)}")
+        logger.info(f"H1N1 distribution: {h1n1_labels.sum()} positive, {(1-h1n1_labels).sum()} negative")
+        logger.info(f"Seasonal distribution: {seasonal_labels.sum()} positive, {(1-seasonal_labels).sum()} negative")
+        
+        # Iterate through folds
+        for fold_id, (train_idx, val_idx) in enumerate(skf.split(X, strat_column)):
+            fold_start_time = time.time()
+            logger.info(f"\n--- Fold {fold_id + 1}/{n_splits} ---")
+            
+            # Get train and validation splits
+            X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+            y_train_h1n1 = h1n1_labels.iloc[train_idx]
+            y_train_seasonal = seasonal_labels.iloc[train_idx]
+            y_val_h1n1 = h1n1_labels.iloc[val_idx]
+            y_val_seasonal = seasonal_labels.iloc[val_idx]
+            
+            # Log fold distributions
+            logger.info(f"Train samples: {len(X_train)}, Validation samples: {len(X_val)}")
+            logger.info(f"Train H1N1: {y_train_h1n1.sum()}/{len(y_train_h1n1)} positive")
+            logger.info(f"Train Seasonal: {y_train_seasonal.sum()}/{len(y_train_seasonal)} positive")
+            logger.info(f"Val H1N1: {y_val_h1n1.sum()}/{len(y_val_h1n1)} positive")
+            logger.info(f"Val Seasonal: {y_val_seasonal.sum()}/{len(y_val_seasonal)} positive")
+            
+            # Step 1: Fit preprocessing on training fold only (no data leakage)
+            if preprocessor is not None:
+                if isinstance(preprocessor, dict):
+                    # If preprocessor is config, create instance
+                    from src.preprocessing import PreprocessingPipeline
+                    from src.config import ImputationConfig, EncodingConfig
+                    impute_cfg = preprocessor.get("imputation", {})
+                    encode_cfg = preprocessor.get("encoding", {})
+                    pipeline = PreprocessingPipeline(impute_cfg, encode_cfg)
+                else:
+                    # Clone preprocessor for this fold
+                    from copy import deepcopy
+                    pipeline = deepcopy(preprocessor)
+                
+                # Fit preprocessing on training fold only
+                X_train_processed = pipeline.fit_transform(X_train)
+                X_val_processed = pipeline.transform(X_val)
+            else:
+                X_train_processed = X_train
+                X_val_processed = X_val
+            
+            # Step 2: Create and train h1n1 model
+            h1n1_config = self.model_config
+            h1n1_model = model_factory.create_model(h1n1_config)
+            h1n1_model.fit(X_train_processed, y_train_h1n1)
+            logger.info(f"H1N1 model trained: {h1n1_model.get_model_name()}")
+            
+            # Step 3: Create and train seasonal model
+            seasonal_config = self.model_config
+            seasonal_model = model_factory.create_model(seasonal_config)
+            seasonal_model.fit(X_train_processed, y_train_seasonal)
+            logger.info(f"Seasonal model trained: {seasonal_model.get_model_name()}")
+            
+            # Step 4: Generate validation predictions
+            y_val_proba_h1n1 = h1n1_model.predict_proba(X_val_processed)[:, 1]
+            y_val_proba_seasonal = seasonal_model.predict_proba(X_val_processed)[:, 1]
+            
+            # Collect validation data for later aggregation
+            val_indices_list.append(val_idx)
+            val_proba_h1n1_list.append(y_val_proba_h1n1)
+            val_proba_seasonal_list.append(y_val_proba_seasonal)
+            val_true_h1n1_list.append(y_val_h1n1.values)
+            val_true_seasonal_list.append(y_val_seasonal.values)
+            
+            # Step 5: Compute validation metrics
+            fold_metrics = self.compute_fold_metrics_dual(
+                y_val_h1n1.values, y_val_proba_h1n1,
+                y_val_seasonal.values, y_val_proba_seasonal
+            )
+            fold_metrics_list.append(fold_metrics)
+            
+            # Log fold metrics
+            logger.info(f"H1N1 AUROC: {fold_metrics['auroc_h1n1']:.4f}")
+            logger.info(f"Seasonal AUROC: {fold_metrics['auroc_seasonal']:.4f}")
+            logger.info(f"Mean AUROC: {fold_metrics['auroc_mean']:.4f}")
+            
+            fold_time = time.time() - fold_start_time
+            logger.info(f"Fold time: {fold_time:.2f}s")
+            
+            # Store FoldResults
+            fold_result = FoldResults(
+                fold_id=fold_id,
+                train_indices=train_idx,
+                val_indices=val_idx,
+                y_val_true=np.column_stack([y_val_h1n1.values, y_val_seasonal.values]),
+                y_val_proba=np.column_stack([y_val_proba_h1n1, y_val_proba_seasonal]),
+                metrics=fold_metrics,
+                model=h1n1_model  # Store h1n1 model as representative
+            )
+            fold_results.append(fold_result)
+        
+        # Step 6: Aggregate metrics across folds
+        mean_metrics, std_metrics = self.aggregate_fold_metrics(fold_metrics_list)
+        
+        # Find best fold (by mean AUROC)
+        best_fold_id = np.argmax([m['auroc_mean'] for m in fold_metrics_list])
+        best_model = fold_results[best_fold_id].model
+        self.best_model = best_model
+        self.best_auroc = mean_metrics['auroc_mean']
+        
+        logger.info(f"\n=== Cross-Validation Results ===")
+        logger.info(f"Best fold: {best_fold_id + 1}")
+        logger.info(f"Mean AUROC: {mean_metrics['auroc_mean']:.4f} ± {std_metrics['auroc_mean']:.4f}")
+        logger.info(f"Mean H1N1 AUROC: {mean_metrics['auroc_h1n1']:.4f} ± {std_metrics['auroc_h1n1']:.4f}")
+        logger.info(f"Mean Seasonal AUROC: {mean_metrics['auroc_seasonal']:.4f} ± {std_metrics['auroc_seasonal']:.4f}")
+        
+        # Create CVResults
+        cv_results = CVResults(
+            fold_results=fold_results,
+            mean_metrics=mean_metrics,
+            std_metrics=std_metrics,
+            best_fold_id=best_fold_id,
+            best_model=best_model
+        )
+        
+        return cv_results
 
     def hyperparameter_search(
         self,
@@ -388,37 +547,69 @@ class TrainingEngine:
         # TODO: Implement
         pass
 
-    def compute_fold_metrics(
+    def compute_fold_metrics_dual(
         self,
-        y_true: np.ndarray,
-        y_proba: np.ndarray,
+        y_true_h1n1: np.ndarray,
+        y_proba_h1n1: np.ndarray,
+        y_true_seasonal: np.ndarray,
+        y_proba_seasonal: np.ndarray,
     ) -> Dict[str, float]:
         """
-        Compute evaluation metrics for a fold.
-        
-        Computes a suite of metrics: ROC AUC (primary), accuracy, F1, precision,
-        recall, and others.
+        Compute evaluation metrics for a fold with two independent targets.
         
         Args:
-            y_true: True labels (n_samples,) with values 0 or 1
-            y_proba: Probability predictions (n_samples, 2)
+            y_true_h1n1: True H1N1 labels (n_samples,) with values 0 or 1
+            y_proba_h1n1: Probability predictions for H1N1 (n_samples,)
+            y_true_seasonal: True seasonal labels (n_samples,) with values 0 or 1
+            y_proba_seasonal: Probability predictions for seasonal (n_samples,)
             
         Returns:
-            Dictionary of metric_name -> score pairs
+            Dictionary with metrics for both targets and mean
             
         Example:
-            >>> metrics = engine.compute_fold_metrics(y_val_true, y_val_proba)
-            >>> print(f"AUROC: {metrics['auroc']:.4f}")
-            >>> print(f"F1: {metrics['f1']:.4f}")
-        
-        Implementation notes:
-            - TODO: Compute AUROC (primary metric for ROC AUC evaluation)
-            - TODO: Compute accuracy, F1, precision, recall (threshold=0.5)
-            - TODO: Compute additional metrics (confusion matrix, etc.)
-            - TODO: Return as dict
+            >>> metrics = engine.compute_fold_metrics_dual(y_h1n1_true, y_h1n1_proba, 
+            ...                                            y_seas_true, y_seas_proba)
+            >>> print(f"H1N1 AUROC: {metrics['auroc_h1n1']:.4f}")
+            >>> print(f"Seasonal AUROC: {metrics['auroc_seasonal']:.4f}")
         """
-        # TODO: Implement
-        pass
+        from sklearn.metrics import roc_auc_score, accuracy_score, f1_score, brier_score_loss
+        
+        # Compute AUROC for both targets
+        auroc_h1n1 = roc_auc_score(y_true_h1n1, y_proba_h1n1)
+        auroc_seasonal = roc_auc_score(y_true_seasonal, y_proba_seasonal)
+        auroc_mean = (auroc_h1n1 + auroc_seasonal) / 2.0
+        
+        # Compute accuracy (threshold 0.5)
+        pred_h1n1 = (y_proba_h1n1 > 0.5).astype(int)
+        pred_seasonal = (y_proba_seasonal > 0.5).astype(int)
+        accuracy_h1n1 = accuracy_score(y_true_h1n1, pred_h1n1)
+        accuracy_seasonal = accuracy_score(y_true_seasonal, pred_seasonal)
+        accuracy_mean = (accuracy_h1n1 + accuracy_seasonal) / 2.0
+        
+        # Compute F1 score (macro)
+        f1_h1n1 = f1_score(y_true_h1n1, pred_h1n1, zero_division=0)
+        f1_seasonal = f1_score(y_true_seasonal, pred_seasonal, zero_division=0)
+        f1_mean = (f1_h1n1 + f1_seasonal) / 2.0
+        
+        # Compute Brier score
+        brier_h1n1 = brier_score_loss(y_true_h1n1, y_proba_h1n1)
+        brier_seasonal = brier_score_loss(y_true_seasonal, y_proba_seasonal)
+        brier_mean = (brier_h1n1 + brier_seasonal) / 2.0
+        
+        return {
+            'auroc_h1n1': auroc_h1n1,
+            'auroc_seasonal': auroc_seasonal,
+            'auroc_mean': auroc_mean,
+            'accuracy_h1n1': accuracy_h1n1,
+            'accuracy_seasonal': accuracy_seasonal,
+            'accuracy_mean': accuracy_mean,
+            'f1_h1n1': f1_h1n1,
+            'f1_seasonal': f1_seasonal,
+            'f1_mean': f1_mean,
+            'brier_h1n1': brier_h1n1,
+            'brier_seasonal': brier_seasonal,
+            'brier_mean': brier_mean,
+        }
 
     def aggregate_fold_metrics(
         self,
@@ -436,17 +627,21 @@ class TrainingEngine:
         Example:
             >>> metrics_list = [fold1_metrics, fold2_metrics, ...]
             >>> mean_m, std_m = engine.aggregate_fold_metrics(metrics_list)
-            >>> print(f"AUROC: {mean_m['auroc']:.4f} ± {std_m['auroc']:.4f}")
-        
-        Implementation notes:
-            - TODO: For each metric name across all folds:
-            -   TODO: Collect values from all folds
-            -   TODO: Compute mean
-            -   TODO: Compute standard deviation
-            - TODO: Return mean and std dicts
+            >>> print(f"AUROC: {mean_m['auroc_mean']:.4f} ± {std_m['auroc_mean']:.4f}")
         """
-        # TODO: Implement
-        pass
+        if not fold_metrics_list:
+            raise ValueError("No fold metrics to aggregate")
+        
+        mean_metrics = {}
+        std_metrics = {}
+        
+        # Get all metric keys from first fold
+        for key in fold_metrics_list[0].keys():
+            values = np.array([m[key] for m in fold_metrics_list])
+            mean_metrics[key] = float(np.mean(values))
+            std_metrics[key] = float(np.std(values))
+        
+        return mean_metrics, std_metrics
 
     def save_cv_results(self, cv_results: CVResults, output_path: str) -> None:
         """

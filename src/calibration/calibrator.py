@@ -21,6 +21,8 @@ from abc import ABC, abstractmethod
 from typing import Optional, Tuple, Dict
 import numpy as np
 import pandas as pd
+from sklearn.linear_model import LogisticRegression
+from sklearn.calibration import CalibratedClassifierCV
 
 
 class CalibratorInterface(ABC):
@@ -261,8 +263,39 @@ class PlattScalingCalibrator(CalibratorInterface):
             - TODO: Store coefficients a, b in calibration_params
             - TODO: Set self.fitted = True
         """
-        # TODO: Implement
-        pass
+        # Validate inputs
+        if y_true is None or y_proba is None:
+            raise ValueError("y_true and y_proba cannot be None")
+        
+        y_true = np.asarray(y_true).ravel()
+        y_proba = np.asarray(y_proba)
+        
+        # Handle both (n_samples,) and (n_samples, 2) formats
+        if y_proba.ndim == 1:
+            # Single probability per sample - assume it's P(y=1)
+            y_proba_positive = y_proba.reshape(-1, 1)
+        elif y_proba.ndim == 2:
+            # Extract P(y=1) from second column
+            y_proba_positive = y_proba[:, 1].reshape(-1, 1)
+        else:
+            raise ValueError(f"y_proba must be 1D or 2D, got shape {y_proba.shape}")
+        
+        # Fit logistic regression: maps uncalibrated probabilities to calibrated
+        # Use a simple logistic regression with no regularization (C=1e10) to fit the validation data closely
+        lr = LogisticRegression(
+            solver='lbfgs',
+            max_iter=1000,
+            C=1e10,  # Very high C to minimize regularization
+        )
+        lr.fit(y_proba_positive, y_true)
+        
+        # Store learned coefficients
+        # The logistic regression learns: P(y=1) = 1 / (1 + exp(-(a*P + b)))
+        self.calibration_params['coef'] = lr.coef_[0, 0]  # slope 'a'
+        self.calibration_params['intercept'] = lr.intercept_[0]  # intercept 'b'
+        self.fitted = True
+        
+        return self
 
     def transform(self, y_proba: np.ndarray) -> np.ndarray:
         """
@@ -275,8 +308,50 @@ class PlattScalingCalibrator(CalibratorInterface):
             - TODO: Reconstruct (P(y=0), P(y=1)) output
             - TODO: Return calibrated probabilities
         """
-        # TODO: Implement
-        pass
+        if not self.fitted:
+            raise ValueError("Calibrator has not been fitted yet. Call fit() first.")
+        
+        if y_proba is None:
+            raise ValueError("y_proba cannot be None")
+        
+        y_proba = np.asarray(y_proba)
+        
+        # Handle both (n_samples,) and (n_samples, 2) formats
+        if y_proba.ndim == 1:
+            # Single probability per sample - assume it's P(y=1)
+            y_proba_positive = y_proba.copy()
+            original_is_1d = True
+        elif y_proba.ndim == 2:
+            # Extract P(y=1) from second column
+            y_proba_positive = y_proba[:, 1].copy()
+            original_is_1d = False
+        else:
+            raise ValueError(f"y_proba must be 1D or 2D, got shape {y_proba.shape}")
+        
+        # Retrieve learned coefficients
+        a = self.calibration_params['coef']
+        b = self.calibration_params['intercept']
+        
+        # Apply Platt scaling: P_calibrated = 1 / (1 + exp(-(a*P_raw + b)))
+        # Compute logit: a*P_raw + b
+        logit = a * y_proba_positive + b
+        
+        # Apply sigmoid: 1 / (1 + exp(-logit))
+        # Numerically stable version: 1 / (1 + exp(-logit))
+        # Clip logit to avoid numerical overflow in exp
+        logit_clipped = np.clip(logit, -500, 500)
+        y_proba_calibrated = 1.0 / (1.0 + np.exp(-logit_clipped))
+        
+        # Ensure calibrated probabilities are in [0.0, 1.0] range
+        y_proba_calibrated = np.clip(y_proba_calibrated, 0.0, 1.0)
+        
+        # Reconstruct output format to match input
+        if original_is_1d:
+            return y_proba_calibrated
+        else:
+            # Return (n_samples, 2) format with P(y=0) and P(y=1)
+            y_proba_negative = 1.0 - y_proba_calibrated
+            return np.column_stack((y_proba_negative, y_proba_calibrated))
 
     def get_calibration_error(
         self,
@@ -289,8 +364,62 @@ class PlattScalingCalibrator(CalibratorInterface):
         Implementation notes:
             - TODO: Compute ECE, MCE, Brier score
         """
-        # TODO: Implement
-        pass
+        y_true = np.asarray(y_true).ravel()
+        y_proba_calibrated = np.asarray(y_proba_calibrated)
+        
+        # Handle both (n_samples,) and (n_samples, 2) formats
+        if y_proba_calibrated.ndim == 2:
+            y_proba_positive = y_proba_calibrated[:, 1]
+        else:
+            y_proba_positive = y_proba_calibrated
+        
+        # Clip to valid probability range to avoid numerical issues
+        y_proba_positive = np.clip(y_proba_positive, 1e-15, 1.0 - 1e-15)
+        
+        # Compute Brier Score: mean squared error between predicted and actual
+        brier_score = np.mean((y_proba_positive - y_true) ** 2)
+        
+        # Compute Expected Calibration Error (ECE)
+        # Divide probabilities into bins and compute mean absolute error
+        n_bins = 10
+        bin_sums = np.zeros(n_bins)
+        bin_true = np.zeros(n_bins)
+        bin_total = np.zeros(n_bins)
+        
+        for i in range(len(y_true)):
+            bin_idx = int(y_proba_positive[i] * n_bins)
+            # Handle edge case where probability = 1.0
+            if bin_idx >= n_bins:
+                bin_idx = n_bins - 1
+            
+            bin_sums[bin_idx] += y_proba_positive[i]
+            bin_true[bin_idx] += y_true[i]
+            bin_total[bin_idx] += 1
+        
+        # Compute ECE as weighted average of bin errors
+        ece = 0.0
+        for i in range(n_bins):
+            if bin_total[i] > 0:
+                bin_accuracy = bin_true[i] / bin_total[i]
+                bin_confidence = bin_sums[i] / bin_total[i]
+                bin_error = abs(bin_confidence - bin_accuracy)
+                weight = bin_total[i] / len(y_true)
+                ece += weight * bin_error
+        
+        # Compute MCE (Maximum Calibration Error)
+        mce = 0.0
+        for i in range(n_bins):
+            if bin_total[i] > 0:
+                bin_accuracy = bin_true[i] / bin_total[i]
+                bin_confidence = bin_sums[i] / bin_total[i]
+                bin_error = abs(bin_confidence - bin_accuracy)
+                mce = max(mce, bin_error)
+        
+        return {
+            'brier': float(brier_score),
+            'ece': float(ece),
+            'mce': float(mce),
+        }
 
 
 class IsotonicCalibrator(CalibratorInterface):
