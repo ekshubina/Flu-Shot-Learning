@@ -51,20 +51,25 @@ encoding:
     medical:
       type: ordinal  # Binary and ordinal features
     demographic:
-      # For trees, ordinal encoding is preferred (fewer features, faster splits)
-      # But preserve categorical structure where needed
-      type: ordinal
-      parameters: {}
+      # For XGBoost, one-hot encoding is required for categorical features
+      # to properly convert object dtype to numeric
+      type: onehot
+      parameters:
+        drop_first: true
     household:
       type: ordinal  # Numeric
     geographic:
-      type: ordinal  # Ordinal region codes
+      # Categorical geographic features need one-hot encoding
+      type: onehot
+      parameters:
+        drop_first: true
     concern:
       type: ordinal  # Ordinal scales
     employment:
-      # After employment simplification: is_employed binary + ordinal encoding for employed
-      type: ordinal
-      parameters: {}
+      # Categorical employment features need one-hot encoding
+      type: onehot
+      parameters:
+        drop_first: true
   
   # Features to drop (optional)
   drop_features: []

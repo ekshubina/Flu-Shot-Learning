@@ -15,9 +15,12 @@ See PROBLEM_DESCRIPTION.md for submission format and evaluation details:
 Reference: SYSTEM_DESIGN.md - Component 7: Evaluation
 """
 
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional, Union
 import numpy as np
 from abc import ABC
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class Evaluator:
@@ -109,11 +112,11 @@ class Evaluator:
                 auroc_seasonal: AUC score for seasonal vaccine (0.0-1.0)
                 auroc_mean: Mean AUC (competition evaluation metric)
         
-        Implementation notes:
-            - TODO: Validate inputs (shapes match, values in valid ranges)
-            - TODO: Use sklearn.metrics.roc_auc_score() with one-hot labels
-            - TODO: Handle edge cases (no positive/negative examples)
-            - TODO: Return tuple of (auc_h1n1, auc_seasonal, mean)
+        Implementation notes (COMPLETED):
+            - ✅ Validates inputs (shapes match, values in valid ranges)
+            - ✅ Uses sklearn.metrics.roc_auc_score()
+            - ✅ Handles edge cases (no positive/negative examples via safe division)
+            - ✅ Returns tuple of (auc_h1n1, auc_seasonal, mean)
         """
         from sklearn.metrics import roc_auc_score
         
@@ -188,12 +191,12 @@ class Evaluator:
                 'ppv': TP / (TP + FP) - positive predictive value, precision
                 'npv': TN / (TN + FN) - negative predictive value
         
-        Implementation notes:
-            - TODO: Validate inputs
-            - TODO: Apply threshold: y_pred_binary = (y_pred >= threshold).astype(int)
-            - TODO: Compute TP, FP, TN, FN using numpy comparisons
-            - TODO: Compute derived metrics (sensitivity, specificity, PPV, NPV)
-            - TODO: Return dictionary with all metrics
+        Implementation notes (COMPLETED):
+            - ✅ Validates inputs
+            - ✅ Applies threshold: y_pred_binary = (y_pred >= threshold).astype(int)
+            - ✅ Computes TP, FP, TN, FN using numpy comparisons
+            - ✅ Computes derived metrics (sensitivity, specificity, PPV, NPV)
+            - ✅ Returns dictionary with all metrics
         """
         # Validate inputs
         if y_true.shape != y_pred.shape:
@@ -269,18 +272,18 @@ class Evaluator:
                 mce: Maximum Calibration Error (0.0-1.0, lower is better)
                 brier_score: Brier Score (0.0-1.0, lower is better)
         
-        Implementation notes:
-            - TODO: Validate inputs
-            - TODO: Bin predictions into n_bins bins of equal width [0, 1]
-            - TODO: For each bin:
-                  - Compute bin confidence (mean of predictions in bin)
-                  - Compute bin accuracy (mean of y_true in bin)
-                  - Count samples in bin
-            - TODO: Weight absolute difference by bin size
-            - TODO: Compute ECE as weighted average of differences
-            - TODO: Compute MCE as maximum difference
-            - TODO: Compute Brier score: mean((y_pred - y_true)^2)
-            - TODO: Return (ece, mce, brier)
+        Implementation notes (COMPLETED):
+            - ✅ Validates inputs
+            - ✅ Bins predictions into n_bins bins of equal width [0, 1]
+            - ✅ For each bin:
+                  - Computes bin confidence (mean of predictions in bin)
+                  - Computes bin accuracy (mean of y_true in bin)
+                  - Counts samples in bin
+            - ✅ Weights absolute difference by bin size
+            - ✅ Computes ECE as weighted average of differences
+            - ✅ Computes MCE as maximum difference
+            - ✅ Computes Brier score: mean((y_pred - y_true)^2)
+            - ✅ Returns (ece, mce, brier)
         """
         # Validate inputs
         if y_true.shape != y_pred.shape:
@@ -377,15 +380,15 @@ class Evaluator:
                 'h1n1_prevalence': Proportion of positive examples for H1N1
                 'seasonal_prevalence': Proportion of positive examples for seasonal
         
-        Implementation notes:
-            - TODO: Store inputs in self.y_true_h1n1, etc. for reference
-            - TODO: Call compute_auroc() to get AUC scores
-            - TODO: Call confusion_matrix() for both vaccines
-            - TODO: Call calibration_error() for both vaccines
-            - TODO: Compute prevalence (proportion of 1s)
-            - TODO: Assemble all metrics into dictionary
-            - TODO: Store in self.metrics_
-            - TODO: Return dictionary
+        Implementation notes (COMPLETED):
+            - ✅ Stores inputs in self.y_true_h1n1, etc. for reference
+            - ✅ Calls compute_auroc() to get AUC scores
+            - ✅ Calls confusion_matrix() for both vaccines
+            - ✅ Calls calibration_error() for both vaccines
+            - ✅ Computes prevalence (proportion of 1s)
+            - ✅ Assembles all metrics into dictionary
+            - ✅ Stores in self.metrics_
+            - ✅ Returns dictionary
         """
         # Store inputs for reference
         self.y_true_h1n1 = y_true_h1n1
@@ -465,11 +468,11 @@ class Evaluator:
         Returns:
             str: Formatted summary of self.metrics_
             
-        Implementation notes:
-            - TODO: Format metrics for display
-            - TODO: Round to 4 decimal places
-            - TODO: Group by vaccine and metric type
-            - TODO: Return human-readable string
+        Implementation notes (COMPLETED):
+            - ✅ Formats metrics for display
+            - ✅ Rounds to 4 decimal places
+            - ✅ Groups by vaccine and metric type
+            - ✅ Returns human-readable string
         """
         if not self.metrics_:
             return "No metrics computed. Call get_diagnostics() first."
@@ -513,3 +516,153 @@ class Evaluator:
         lines.append(f"  Seasonal: {self.metrics_['seasonal_prevalence']:.4f}")
         
         return "\n".join(lines)
+    
+    def evaluate(
+        self,
+        y_true_h1n1: np.ndarray,
+        y_true_seasonal: np.ndarray,
+        y_pred_h1n1: np.ndarray,
+        y_pred_seasonal: np.ndarray,
+        threshold: Union[float, str] = 0.5,
+        tuned_thresholds: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, float]:
+        """
+        Evaluate model performance with support for adaptive thresholds.
+        
+        This is a convenience method that wraps get_diagnostics() and handles
+        adaptive threshold selection for config-driven pipelines.
+        
+        Parameters:
+            y_true_h1n1 (np.ndarray): True H1N1 labels (n_samples,)
+                Values: 0 or 1
+            y_true_seasonal (np.ndarray): True seasonal labels (n_samples,)
+                Values: 0 or 1
+            y_pred_h1n1 (np.ndarray): Predicted H1N1 probabilities (n_samples,)
+                Values: in [0, 1]
+            y_pred_seasonal (np.ndarray): Predicted seasonal probabilities (n_samples,)
+                Values: in [0, 1]
+            threshold (Union[float, str]): Classification threshold strategy.
+                - If float in [0, 1]: use as fixed threshold for all metrics
+                - If string "adaptive": use thresholds from tuned_thresholds dict
+                Default: 0.5 (standard probability threshold)
+            tuned_thresholds (Optional[Dict[str, float]]): Pre-tuned thresholds
+                per vaccine. Required if threshold="adaptive".
+                Format: {"h1n1_vaccine": float, "seasonal_vaccine": float}
+        
+        Returns:
+            Dict[str, float]: Comprehensive metrics including:
+                - auroc_h1n1, auroc_seasonal, auroc_mean
+                - h1n1_sensitivity, h1n1_specificity, h1n1_ppv
+                - seasonal_sensitivity, seasonal_specificity, seasonal_ppv
+                - h1n1_ece, h1n1_mce, h1n1_brier
+                - seasonal_ece, seasonal_mce, seasonal_brier
+                - h1n1_prevalence, seasonal_prevalence
+        
+        Raises:
+            ValueError: If threshold="adaptive" but tuned_thresholds is None
+            ValueError: If threshold is not a float in [0, 1] or "adaptive"
+        
+        Example:
+            ```python
+            # Standard evaluation with fixed threshold
+            metrics = evaluator.evaluate(
+                y_train_h1n1, y_train_seasonal,
+                cv_probs_h1n1, cv_probs_seasonal,
+                threshold=0.5
+            )
+            
+            # Adaptive threshold evaluation (from threshold tuning)
+            metrics = evaluator.evaluate(
+                y_train_h1n1, y_train_seasonal,
+                cv_probs_h1n1, cv_probs_seasonal,
+                threshold="adaptive",
+                tuned_thresholds={"h1n1_vaccine": 0.48, "seasonal_vaccine": 0.52}
+            )
+            ```
+        """
+        # Handle adaptive threshold
+        if isinstance(threshold, str):
+            if threshold.lower() == "adaptive":
+                if tuned_thresholds is None:
+                    raise ValueError(
+                        "threshold='adaptive' requires tuned_thresholds dict "
+                        "with keys 'h1n1_vaccine' and 'seasonal_vaccine'"
+                    )
+                # Use different thresholds for each vaccine
+                h1n1_threshold = tuned_thresholds.get('h1n1_vaccine', 0.5)
+                seasonal_threshold = tuned_thresholds.get('seasonal_vaccine', 0.5)
+                
+                logger.info(
+                    f"Using adaptive thresholds: "
+                    f"H1N1={h1n1_threshold:.3f}, Seasonal={seasonal_threshold:.3f}"
+                )
+                
+                # Compute ROC AUC with raw probabilities (ignores threshold)
+                auroc_h1n1, auroc_seasonal, auroc_mean = self.compute_auroc(
+                    y_true_h1n1, y_true_seasonal, y_pred_h1n1, y_pred_seasonal
+                )
+                
+                # Compute confusion matrix metrics using tuned thresholds
+                cm_h1n1 = self.confusion_matrix(
+                    y_true_h1n1, y_pred_h1n1, h1n1_threshold
+                )
+                cm_seasonal = self.confusion_matrix(
+                    y_true_seasonal, y_pred_seasonal, seasonal_threshold
+                )
+                
+                # Calibration metrics (threshold-independent)
+                ece_h1n1, mce_h1n1, brier_h1n1 = self.calibration_error(
+                    y_true_h1n1, y_pred_h1n1, n_bins=10
+                )
+                ece_seasonal, mce_seasonal, brier_seasonal = self.calibration_error(
+                    y_true_seasonal, y_pred_seasonal, n_bins=10
+                )
+                
+                # Prevalence
+                h1n1_prevalence = np.mean(y_true_h1n1)
+                seasonal_prevalence = np.mean(y_true_seasonal)
+                
+                # Assemble metrics
+                metrics = {
+                    'auroc_h1n1': auroc_h1n1,
+                    'auroc_seasonal': auroc_seasonal,
+                    'auroc_mean': auroc_mean,
+                    'h1n1_sensitivity': cm_h1n1['sensitivity'],
+                    'h1n1_specificity': cm_h1n1['specificity'],
+                    'h1n1_ppv': cm_h1n1['ppv'],
+                    'h1n1_ece': ece_h1n1,
+                    'h1n1_mce': mce_h1n1,
+                    'h1n1_brier': brier_h1n1,
+                    'seasonal_sensitivity': cm_seasonal['sensitivity'],
+                    'seasonal_specificity': cm_seasonal['specificity'],
+                    'seasonal_ppv': cm_seasonal['ppv'],
+                    'seasonal_ece': ece_seasonal,
+                    'seasonal_mce': mce_seasonal,
+                    'seasonal_brier': brier_seasonal,
+                    'h1n1_prevalence': h1n1_prevalence,
+                    'seasonal_prevalence': seasonal_prevalence,
+                }
+                
+                self.metrics_ = metrics
+                return metrics
+            else:
+                raise ValueError(
+                    f"threshold must be float in [0, 1] or 'adaptive', got: {threshold}"
+                )
+        
+        # Handle numeric threshold
+        if not isinstance(threshold, (int, float)):
+            raise ValueError(
+                f"threshold must be numeric or 'adaptive', got: {type(threshold)}"
+            )
+        
+        if not (0.0 <= threshold <= 1.0):
+            raise ValueError(f"threshold must be in [0, 1], got: {threshold}")
+        
+        # Standard evaluation with fixed threshold
+        logger.info(f"Using fixed threshold: {threshold:.3f}")
+        return self.get_diagnostics(
+            y_true_h1n1, y_true_seasonal,
+            y_pred_h1n1, y_pred_seasonal,
+            threshold=threshold
+        )

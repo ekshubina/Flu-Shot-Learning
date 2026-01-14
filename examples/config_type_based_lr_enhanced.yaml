@@ -106,14 +106,12 @@ training:
   
   cv_folds: 5
   
-  # Hyperparameter search (NEW: enabled for LR enhancement)
-  hyperparameter_search: true
+  # Hyperparameter search (NEW: disabled for now - needs preprocessing integration)
+  hyperparameter_search: false
   search_strategy: grid  # Grid search for logistic regression
   
   # Search space for logistic regression hyperparameters
-  search_space:
-    C: [0.001, 0.01, 0.1, 1.0, 10.0]
-    penalty: [l1, l2]
+  search_space: {}
   
   # Class imbalance handling
   class_weight_strategy: balanced  # Options: balanced, custom, none

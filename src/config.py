@@ -289,6 +289,8 @@ class TrainingConfig:
         early_stopping_rounds: Number of rounds without improvement before stopping (default: 10)
         hyperparameter_search: Whether to perform hyperparameter search (default: False)
         search_strategy: Hyperparameter search strategy (grid, random, bayesian)
+        search_space: Parameter grid for hyperparameter search (dict mapping param names to lists of values)
+        search_params: Parameters for search strategy (e.g., n_trials, timeout, n_jobs for Bayesian)
         search_cv_folds: CV folds for hyperparameter search (default: 3)
         class_weight_strategy: Class weight strategy (default: balanced)
     """
@@ -303,6 +305,8 @@ class TrainingConfig:
     early_stopping_rounds: int = 10
     hyperparameter_search: bool = False
     search_strategy: str = "grid"
+    search_space: Dict[str, List[Any]] = field(default_factory=dict)
+    search_params: Dict[str, Any] = field(default_factory=dict)
     search_cv_folds: int = 3
     class_weight_strategy: str = "balanced"
 
@@ -343,6 +347,9 @@ class EvaluationConfig:
         plot_roc_curves: Whether to generate ROC curve plots (default: True)
         plot_calibration_curves: Whether to generate calibration plots (default: True)
         plot_feature_importance: Whether to plot feature importance (default: True)
+        create_plots: Whether to create visualizations (default: True)
+        plot_types: List of plot types to generate (roc_curves, calibration_curve, feature_importance, etc)
+        threshold: Probability threshold for classification (float value or "adaptive" for tuned threshold)
         output_dir: Directory to save plots and detailed results (default: "results/")
     """
     metrics: List[str] = field(default_factory=lambda: [
@@ -352,6 +359,9 @@ class EvaluationConfig:
     plot_roc_curves: bool = True
     plot_calibration_curves: bool = True
     plot_feature_importance: bool = True
+    create_plots: bool = True
+    plot_types: List[str] = field(default_factory=list)
+    threshold: Union[float, str] = 0.5
     output_dir: str = "results/"
 
 

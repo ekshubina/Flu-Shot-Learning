@@ -329,6 +329,45 @@ def run_pipeline(config: PipelineConfig, run_name: str = "default_run") -> dict:
         
         training_engine = TrainingEngine(training_config_dict, model_config_dict)
         
+        # ============================================================================
+        # STAGE 3A: Hyperparameter Search (Optional)
+        # ============================================================================
+        best_hyperparams = None
+        if config.training.hyperparameter_search and config.training.search_space:
+            logger.info("=" * 80)
+            logger.info("STAGE 3A: Hyperparameter Search...")
+            search_start = time.time()
+            
+            # Hyperparameter search works on raw data, with preprocessing done inside
+            search_results = training_engine.hyperparameter_search(
+                X_train,
+                y_train,
+                param_grid=config.training.search_space,
+                cv_folds=config.training.search_cv_folds,
+                preprocessor=preprocessing_pipeline
+            )
+            
+            best_hyperparams = search_results.get('best_params', {})
+            best_score = search_results.get('best_score', 0.0)
+            
+            logger.info(f"  ✓ Hyperparameter search complete")
+            logger.info(f"    Best AUROC: {best_score:.4f}")
+            logger.info(f"    Best params: {best_hyperparams}")
+            logger.info(f"    Search time: {time.time() - search_start:.1f}s")
+            
+            # Update model config with best hyperparameters
+            if best_hyperparams:
+                model_config_dict['hyperparameters'].update(best_hyperparams)
+                # Recreate training engine with updated config
+                training_engine = TrainingEngine(training_config_dict, model_config_dict)
+        
+        # ============================================================================
+        # STAGE 3B: Cross-Validation with (possibly tuned) Hyperparameters
+        # ============================================================================
+        logger.info("=" * 80)
+        logger.info("STAGE 3B: Running stratified cross-validation...")
+        stage_start = time.time()
+        
         # Run cross-validation
         cv_results = training_engine.run_cv(
             X_train,
@@ -450,6 +489,27 @@ def run_pipeline(config: PipelineConfig, run_name: str = "default_run") -> dict:
         results['stages_completed'].append('calibration')
         
         # ============================================================================
+        # STAGE 4A: Threshold Tuning (Optional)
+        # ============================================================================
+        tuned_thresholds = None
+        if config.training.threshold_tuning:
+            logger.info("=" * 80)
+            logger.info("STAGE 4A: Threshold Tuning...")
+            stage_start = time.time()
+            
+            tuned_thresholds = training_engine.apply_threshold_tuning(
+                cv_results.fold_results,
+                metric=config.training.threshold_metric
+            )
+            
+            logger.info(f"  ✓ Threshold tuning complete")
+            logger.info(f"    H1N1 threshold: {tuned_thresholds.get('h1n1_vaccine', 0.5):.4f}")
+            logger.info(f"    Seasonal threshold: {tuned_thresholds.get('seasonal_vaccine', 0.5):.4f}")
+            logger.info(f"    Threshold tuning time: {time.time() - stage_start:.2f}s")
+            
+            results['thresholds'] = tuned_thresholds
+        
+        # ============================================================================
         # STAGE 5: Evaluation & Metrics
         # ============================================================================
         logger.info("=" * 80)
@@ -458,12 +518,17 @@ def run_pipeline(config: PipelineConfig, run_name: str = "default_run") -> dict:
         
         evaluator = Evaluator()
         
-        # Calculate metrics using the Evaluator.get_diagnostics method
-        metrics_full = evaluator.get_diagnostics(
+        # Determine threshold strategy
+        threshold_strategy = config.evaluation.threshold if hasattr(config.evaluation, 'threshold') else 0.5
+        
+        # Calculate metrics using the Evaluator.evaluate method (supports adaptive thresholds)
+        metrics_full = evaluator.evaluate(
             y_train['h1n1_vaccine'].values,
             y_train['seasonal_vaccine'].values,
             cv_preds_h1n1_calibrated,
             cv_preds_seasonal_calibrated,
+            threshold=threshold_strategy,
+            tuned_thresholds=tuned_thresholds
         )
         
         # Extract the key metrics
@@ -508,10 +573,10 @@ def run_pipeline(config: PipelineConfig, run_name: str = "default_run") -> dict:
             if plot_roc_curves is not None:
                 plot_roc_curves(
                     y_train['h1n1_vaccine'].values,
-                    cv_preds_h1n1_calibrated,
                     y_train['seasonal_vaccine'].values,
+                    cv_preds_h1n1_calibrated,
                     cv_preds_seasonal_calibrated,
-                    output_path=output_dir / 'roc_curves.png'
+                    save_path=str(output_dir / 'roc_curves.png')
                 )
                 logger.info(f"  • ROC curves saved to {output_dir / 'roc_curves.png'}")
             
@@ -521,7 +586,7 @@ def run_pipeline(config: PipelineConfig, run_name: str = "default_run") -> dict:
                     cv_preds_h1n1_calibrated,
                     y_train['seasonal_vaccine'].values,
                     cv_preds_seasonal_calibrated,
-                    output_path=output_dir / 'calibration_curves.png'
+                    save_path=str(output_dir / 'calibration_curves.png')
                 )
                 logger.info(f"  • Calibration curves saved to {output_dir / 'calibration_curves.png'}")
             
@@ -530,7 +595,7 @@ def run_pipeline(config: PipelineConfig, run_name: str = "default_run") -> dict:
             plot_confidence_distribution(
                 cv_preds_h1n1_calibrated,
                 cv_preds_seasonal_calibrated,
-                output_path=output_dir / 'confidence_distribution.png'
+                save_path=str(output_dir / 'confidence_distribution.png')
             )
             logger.info(f"  • Confidence distribution saved to {output_dir / 'confidence_distribution.png'}")
             
@@ -549,10 +614,11 @@ def run_pipeline(config: PipelineConfig, run_name: str = "default_run") -> dict:
         stage_start = time.time()
         
         try:
+            from src.tracking.logger import create_run_id
             log_path = config.tracking.log_path if hasattr(config.tracking, 'log_path') else 'experiments.csv'
             tracker = CSVExperimentLogger(log_path)
             
-            run_id = tracker.create_run_id()
+            run_id = create_run_id()
             tracker.log_run(
                 run_id=run_id,
                 model_type=config.model.model_type,

@@ -17,11 +17,13 @@ classification and evaluation metrics (ROC AUC).
 """
 
 from abc import abstractmethod
-from typing import Optional, Dict, List, Tuple, Any
+from typing import Optional, Dict, List, Tuple, Any, Union
 from dataclasses import dataclass
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import roc_auc_score
+import itertools
 import time
 import logging
 
@@ -311,7 +313,7 @@ class TrainingEngine:
         mean_metrics, std_metrics = self.aggregate_fold_metrics(fold_metrics_list)
         
         # Find best fold (by mean AUROC)
-        best_fold_id = np.argmax([m['auroc_mean'] for m in fold_metrics_list])
+        best_fold_id = int(np.argmax([m['auroc_mean'] for m in fold_metrics_list]))
         best_model = fold_results[best_fold_id].model
         self.best_model = best_model
         self.best_auroc = mean_metrics['auroc_mean']
@@ -339,6 +341,7 @@ class TrainingEngine:
         y: pd.DataFrame,
         param_grid: Dict[str, List[Any]],
         cv_folds: int = 3,
+        preprocessor: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Search over hyperparameter space using configured strategy.
@@ -352,6 +355,7 @@ class TrainingEngine:
             param_grid: Dictionary of parameter names to lists of values
                        (for grid/random search) or distributions (for Bayesian)
             cv_folds: Number of folds for inner cross-validation
+            preprocessor: Optional PreprocessingPipeline for imputation and encoding
             
         Returns:
             Dictionary with:
@@ -388,14 +392,454 @@ class TrainingEngine:
             -   TODO: Explore-exploit tradeoff to balance search
             -   TODO: Return results
         """
-        # TODO: Implement
-        pass
+        logger.info(f"\n=== Hyperparameter Search ({self.training_config['search_strategy'].upper()}) ===")
+        search_start = time.time()
+        
+        search_strategy = self.training_config.get('search_strategy', 'grid')
+        
+        if search_strategy == 'grid':
+            results = self._grid_search(X, y, param_grid, cv_folds, preprocessor)
+        elif search_strategy == 'random':
+            results = self._random_search(X, y, param_grid, cv_folds, preprocessor)
+        elif search_strategy == 'bayesian':
+            results = self._bayesian_search(X, y, param_grid, cv_folds, preprocessor)
+        else:
+            raise ValueError(f"Unknown search_strategy: {search_strategy}. Must be 'grid', 'random', or 'bayesian'")
+        
+        search_time = time.time() - search_start
+        results['search_time'] = search_time
+        
+        logger.info(f"Best hyperparameters: {results['best_params']}")
+        logger.info(f"Best AUROC: {results['best_score']:.4f}")
+        logger.info(f"Search time: {search_time:.1f}s")
+        
+        return results
+
+    def _grid_search(
+        self,
+        X: pd.DataFrame,
+        y: pd.DataFrame,
+        param_grid: Dict[str, List[Any]],
+        cv_folds: int,
+        preprocessor: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """
+        Grid search: exhaustively evaluate all parameter combinations.
+        
+        Args:
+            X: Training features
+            y: Training labels
+            param_grid: Dict of parameter names to lists of values
+            cv_folds: Number of CV folds for evaluation
+            
+        Returns:
+            Dict with best_params, best_score, and all results
+        """
+        logger.info(f"Grid search over {len(param_grid)} parameters")
+        
+        # Generate all parameter combinations
+        param_names = list(param_grid.keys())
+        param_values = [param_grid[name] for name in param_names]
+        param_combinations = list(itertools.product(*param_values))
+        
+        logger.info(f"Total combinations to evaluate: {len(param_combinations)}")
+        
+        results = []
+        best_score = -np.inf
+        best_params = None
+        
+        for i, param_combo in enumerate(param_combinations):
+            # Create param dict from combination
+            params = dict(zip(param_names, param_combo))
+            
+            logger.info(f"[{i+1}/{len(param_combinations)}] Evaluating: {params}")
+            
+            # Update model config with new hyperparameters
+            original_hyperparams = self.model_config.get('hyperparameters', {}).copy()
+            self.model_config['hyperparameters'].update(params)
+            
+            try:
+                # Run CV with these hyperparameters
+                from src.models.factory import ModelFactory
+                
+                # Inner CV loop to evaluate this parameter set
+                cv_scores = []
+                skf = StratifiedKFold(
+                    n_splits=cv_folds,
+                    shuffle=True,
+                    random_state=self.training_config.get('random_seed', 42)
+                )
+                
+                # For multilabel, we need to stratify based on combined labels
+                # Create a combined label for stratification
+                y_combined = y.iloc[:, 0].astype(str) + '_' + y.iloc[:, 1].astype(str)
+                
+                for fold_idx, (train_idx, val_idx) in enumerate(skf.split(X, y_combined)):
+                    X_train_fold = X.iloc[train_idx].reset_index(drop=True)
+                    y_train_fold = y.iloc[train_idx].reset_index(drop=True)
+                    X_val_fold = X.iloc[val_idx].reset_index(drop=True)
+                    y_val_fold = y.iloc[val_idx].reset_index(drop=True)
+                    
+                    # Create config for this trial
+                    model_config = {
+                        'model_type': self.model_config.get('model_type', 'logistic_regression'),
+                        'hyperparameters': self.model_config.get('hyperparameters', {})
+                    }
+                    
+                    # Train models for both vaccines
+                    model_h1n1 = ModelFactory.create_model(model_config)
+                    model_seasonal = ModelFactory.create_model(model_config)
+                    
+                    model_h1n1.fit(X_train_fold, y_train_fold.iloc[:, 0])
+                    model_seasonal.fit(X_train_fold, y_train_fold.iloc[:, 1])
+                    
+                    # Predict on validation fold
+                    y_val_proba_h1n1 = model_h1n1.predict_proba(X_val_fold)
+                    y_val_proba_seasonal = model_seasonal.predict_proba(X_val_fold)
+                    
+                    # Handle predictions (could be 1D or 2D)
+                    if len(y_val_proba_h1n1.shape) == 2:
+                        y_val_proba_h1n1 = y_val_proba_h1n1[:, 1]
+                    if len(y_val_proba_seasonal.shape) == 2:
+                        y_val_proba_seasonal = y_val_proba_seasonal[:, 1]
+                    
+                    # Compute AUROC
+                    auroc_h1n1 = roc_auc_score(y_val_fold.iloc[:, 0], y_val_proba_h1n1)
+                    auroc_seasonal = roc_auc_score(y_val_fold.iloc[:, 1], y_val_proba_seasonal)
+                    mean_auroc = (auroc_h1n1 + auroc_seasonal) / 2.0
+                    
+                    cv_scores.append(mean_auroc)
+                
+                # Compute mean CV score
+                mean_cv_score = np.mean(cv_scores)
+                
+                results.append({
+                    'params': params,
+                    'score': mean_cv_score,
+                    'cv_scores': cv_scores
+                })
+                
+                logger.info(f"  Score: {mean_cv_score:.4f} (std: {np.std(cv_scores):.4f})")
+                
+                # Update best if needed
+                if mean_cv_score > best_score:
+                    best_score = mean_cv_score
+                    best_params = params.copy()
+                    
+            finally:
+                # Restore original hyperparameters
+                self.model_config['hyperparameters'] = original_hyperparams
+        
+        # Sort results by score
+        results.sort(key=lambda x: x['score'], reverse=True)
+        
+        return {
+            'best_params': best_params,
+            'best_score': best_score,
+            'results': results,
+        }
+
+    def _random_search(
+        self,
+        X: pd.DataFrame,
+        y: pd.DataFrame,
+        param_grid: Dict[str, List[Any]],
+        cv_folds: int,
+        preprocessor: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """
+        Random search: randomly sample parameter combinations.
+        
+        Args:
+            X: Training features
+            y: Training labels
+            param_grid: Dict of parameter names to lists of values
+            cv_folds: Number of CV folds for evaluation
+            
+        Returns:
+            Dict with best_params, best_score, and all results
+        """
+        search_params = self.training_config.get('search_params', {})
+        n_trials = search_params.get('n_trials', 20)
+        random_seed = self.training_config.get('random_seed', 42)
+        
+        logger.info(f"Random search with {n_trials} trials")
+        
+        rng = np.random.RandomState(random_seed)
+        param_names = list(param_grid.keys())
+        
+        results = []
+        best_score = -np.inf
+        best_params = None
+        
+        for trial in range(n_trials):
+            # Randomly sample parameters
+            params = {}
+            for param_name in param_names:
+                param_values = param_grid[param_name]
+                params[param_name] = param_values[rng.randint(0, len(param_values))]
+            
+            logger.info(f"[Trial {trial+1}/{n_trials}] Evaluating: {params}")
+            
+            # Update model config with new hyperparameters
+            original_hyperparams = self.model_config.get('hyperparameters', {}).copy()
+            self.model_config['hyperparameters'].update(params)
+            
+            try:
+                # Run CV with these hyperparameters
+                from src.models.factory import ModelFactory
+                
+                # Inner CV loop to evaluate this parameter set
+                cv_scores = []
+                skf = StratifiedKFold(
+                    n_splits=cv_folds,
+                    shuffle=True,
+                    random_state=random_seed
+                )
+                
+                # For multilabel, we need to stratify based on combined labels
+                y_combined = y.iloc[:, 0].astype(str) + '_' + y.iloc[:, 1].astype(str)
+                
+                for fold_idx, (train_idx, val_idx) in enumerate(skf.split(X, y_combined)):
+                    X_train_fold = X.iloc[train_idx].reset_index(drop=True)
+                    y_train_fold = y.iloc[train_idx].reset_index(drop=True)
+                    X_val_fold = X.iloc[val_idx].reset_index(drop=True)
+                    y_val_fold = y.iloc[val_idx].reset_index(drop=True)
+                    
+                    # Create config for this trial
+                    model_config = {
+                        'model_type': self.model_config.get('model_type', 'logistic_regression'),
+                        'hyperparameters': self.model_config.get('hyperparameters', {})
+                    }
+                    
+                    # Train models for both vaccines
+                    model_h1n1 = ModelFactory.create_model(model_config)
+                    model_seasonal = ModelFactory.create_model(model_config)
+                    
+                    model_h1n1.fit(X_train_fold, y_train_fold.iloc[:, 0])
+                    model_seasonal.fit(X_train_fold, y_train_fold.iloc[:, 1])
+                    
+                    # Predict on validation fold
+                    y_val_proba_h1n1 = model_h1n1.predict_proba(X_val_fold)
+                    y_val_proba_seasonal = model_seasonal.predict_proba(X_val_fold)
+                    
+                    # Handle predictions (could be 1D or 2D)
+                    if len(y_val_proba_h1n1.shape) == 2:
+                        y_val_proba_h1n1 = y_val_proba_h1n1[:, 1]
+                    if len(y_val_proba_seasonal.shape) == 2:
+                        y_val_proba_seasonal = y_val_proba_seasonal[:, 1]
+                    
+                    # Compute AUROC
+                    auroc_h1n1 = roc_auc_score(y_val_fold.iloc[:, 0], y_val_proba_h1n1)
+                    auroc_seasonal = roc_auc_score(y_val_fold.iloc[:, 1], y_val_proba_seasonal)
+                    mean_auroc = (auroc_h1n1 + auroc_seasonal) / 2.0
+                    
+                    cv_scores.append(mean_auroc)
+                
+                # Compute mean CV score
+                mean_cv_score = np.mean(cv_scores)
+                
+                results.append({
+                    'params': params,
+                    'score': mean_cv_score,
+                    'cv_scores': cv_scores
+                })
+                
+                logger.info(f"  Score: {mean_cv_score:.4f} (std: {np.std(cv_scores):.4f})")
+                
+                # Update best if needed
+                if mean_cv_score > best_score:
+                    best_score = mean_cv_score
+                    best_params = params.copy()
+                    
+            finally:
+                # Restore original hyperparameters
+                self.model_config['hyperparameters'] = original_hyperparams
+        
+        # Sort results by score
+        results.sort(key=lambda x: x['score'], reverse=True)
+        
+        return {
+            'best_params': best_params,
+            'best_score': best_score,
+            'results': results,
+        }
+
+    def _bayesian_search(
+        self,
+        X: pd.DataFrame,
+        y: pd.DataFrame,
+        param_grid: Dict[str, List[Any]],
+        cv_folds: int,
+        preprocessor: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """
+        Bayesian search using Optuna for hyperparameter optimization.
+        
+        Args:
+            X: Training features
+            y: Training labels
+            param_grid: Dict of parameter names to lists of values
+            cv_folds: Number of CV folds for evaluation
+            
+        Returns:
+            Dict with best_params, best_score, and all results
+        """
+        try:
+            import optuna
+            from optuna.samplers import TPESampler
+        except ImportError:
+            logger.warning("Optuna not installed. Falling back to random search.")
+            return self._random_search(X, y, param_grid, cv_folds)
+        
+        search_params = self.training_config.get('search_params', {})
+        n_trials = search_params.get('n_trials', 40)
+        timeout = search_params.get('timeout', None)
+        n_jobs = search_params.get('n_jobs', 1)
+        random_seed = self.training_config.get('random_seed', 42)
+        
+        logger.info(f"Bayesian search (Optuna) with {n_trials} trials")
+        
+        # Suppress Optuna logging
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+        
+        # Create objective function
+        def objective(trial):
+            params = {}
+            for param_name, param_values in param_grid.items():
+                if isinstance(param_values[0], int):
+                    # Integer parameter
+                    params[param_name] = trial.suggest_int(
+                        param_name,
+                        min(param_values),
+                        max(param_values)
+                    )
+                elif isinstance(param_values[0], float):
+                    # Float parameter
+                    params[param_name] = trial.suggest_float(
+                        param_name,
+                        min(param_values),
+                        max(param_values)
+                    )
+                else:
+                    # Categorical parameter
+                    params[param_name] = trial.suggest_categorical(
+                        param_name,
+                        param_values
+                    )
+            
+            # Update model config with suggested hyperparameters
+            original_hyperparams = self.model_config.get('hyperparameters', {}).copy()
+            self.model_config['hyperparameters'].update(params)
+            
+            try:
+                # Run CV with these hyperparameters
+                from src.models.factory import ModelFactory
+                
+                # Inner CV loop to evaluate this parameter set
+                cv_scores = []
+                skf = StratifiedKFold(
+                    n_splits=cv_folds,
+                    shuffle=True,
+                    random_state=random_seed
+                )
+                
+                # For multilabel, we need to stratify based on combined labels
+                y_combined = y.iloc[:, 0].astype(str) + '_' + y.iloc[:, 1].astype(str)
+                
+                for fold_idx, (train_idx, val_idx) in enumerate(skf.split(X, y_combined)):
+                    X_train_fold = X.iloc[train_idx].reset_index(drop=True)
+                    y_train_fold = y.iloc[train_idx].reset_index(drop=True)
+                    X_val_fold = X.iloc[val_idx].reset_index(drop=True)
+                    y_val_fold = y.iloc[val_idx].reset_index(drop=True)
+                    
+                    # Apply preprocessing if provided (bayesian search)
+                    if preprocessor is not None:
+                        from copy import deepcopy
+                        pipeline = deepcopy(preprocessor)
+                        X_train_fold = pipeline.fit_transform(X_train_fold)
+                        X_val_fold = pipeline.transform(X_val_fold)
+                    
+                    # Create config for this trial
+                    model_config = {
+                        'model_type': self.model_config.get('model_type', 'logistic_regression'),
+                        'hyperparameters': self.model_config.get('hyperparameters', {})
+                    }
+                    
+                    # Train models for both vaccines
+                    model_h1n1 = ModelFactory.create_model(model_config)
+                    model_seasonal = ModelFactory.create_model(model_config)
+                    
+                    model_h1n1.fit(X_train_fold, y_train_fold.iloc[:, 0])
+                    model_seasonal.fit(X_train_fold, y_train_fold.iloc[:, 1])
+                    
+                    # Predict on validation fold
+                    y_val_proba_h1n1 = model_h1n1.predict_proba(X_val_fold)
+                    y_val_proba_seasonal = model_seasonal.predict_proba(X_val_fold)
+                    
+                    # Handle predictions (could be 1D or 2D)
+                    if len(y_val_proba_h1n1.shape) == 2:
+                        y_val_proba_h1n1 = y_val_proba_h1n1[:, 1]
+                    if len(y_val_proba_seasonal.shape) == 2:
+                        y_val_proba_seasonal = y_val_proba_seasonal[:, 1]
+                    
+                    # Compute AUROC
+                    auroc_h1n1 = roc_auc_score(y_val_fold.iloc[:, 0], y_val_proba_h1n1)
+                    auroc_seasonal = roc_auc_score(y_val_fold.iloc[:, 1], y_val_proba_seasonal)
+                    mean_auroc = (auroc_h1n1 + auroc_seasonal) / 2.0
+                    
+                    cv_scores.append(mean_auroc)
+                
+                # Compute mean CV score for bayesian search
+                mean_cv_score = np.mean(cv_scores)
+                return mean_cv_score
+                
+            finally:
+                # Restore original hyperparameters
+                self.model_config['hyperparameters'] = original_hyperparams
+        
+        # Create Optuna study
+        sampler = TPESampler(seed=random_seed)
+        study = optuna.create_study(
+            direction='maximize',
+            sampler=sampler
+        )
+        
+        # Run optimization
+        study.optimize(
+            lambda trial: float(objective(trial)),  # Type: convert to float
+            n_trials=n_trials,
+            timeout=timeout,
+            n_jobs=1,  # n_jobs in Optuna doesn't work well with our nested CV
+            show_progress_bar=False
+        )
+        
+        # Extract best trial info
+        best_trial = study.best_trial
+        best_params = best_trial.params
+        best_score = best_trial.value
+        
+        # Collect all results for consistency with other search methods
+        results = []
+        for trial in study.trials:
+            results.append({
+                'params': trial.params,
+                'score': trial.value if trial.value is not None else -np.inf,
+            })
+        
+        results.sort(key=lambda x: x['score'], reverse=True)
+        
+        return {
+            'best_params': best_params,
+            'best_score': best_score,
+            'results': results,
+        }
 
     def get_fold_predictions(
         self,
         X_test: pd.DataFrame,
         return_std: bool = False,
-    ) -> np.ndarray:
+    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """
         Get test predictions by averaging across all folds (ensemble).
         
@@ -425,8 +869,35 @@ class TrainingEngine:
             - TODO: If return_std, compute standard deviation
             - TODO: Return averaged predictions (and std if requested)
         """
-        # TODO: Implement
-        pass
+        if not self.fold_results:
+            raise ValueError("No fold results available. Run run_cv() first.")
+        
+        all_proba = []
+        
+        # Collect predictions from all fold models
+        for fold_result in self.fold_results:
+            if fold_result.model is None:
+                logger.warning(f"Fold {fold_result.fold_id} has no model stored")
+                continue
+            
+            # Predict with this fold's model
+            proba = fold_result.model.predict_proba(X_test)
+            all_proba.append(proba)
+        
+        if not all_proba:
+            raise ValueError("No fold models available for prediction")
+        
+        # Stack predictions from all folds
+        all_proba = np.array(all_proba)  # Shape: (n_folds, n_test, 2)
+        
+        # Compute mean across folds
+        mean_proba = np.mean(all_proba, axis=0)
+        
+        if return_std:
+            std_proba = np.std(all_proba, axis=0)
+            return mean_proba, std_proba
+        else:
+            return mean_proba
 
     def get_best_model(self) -> Optional[Any]:
         """
@@ -447,7 +918,7 @@ class TrainingEngine:
     def apply_class_weights(
         self,
         y: pd.DataFrame,
-    ) -> Dict[int, float]:
+    ) -> Optional[Dict[int, float]]:
         """
         Compute class weights to handle imbalance.
         
@@ -472,8 +943,51 @@ class TrainingEngine:
             - TODO: Average weights across targets (or use per-target)
             - TODO: Return as dict
         """
-        # TODO: Implement
-        pass
+        strategy = self.training_config.get('class_weight_strategy', 'balanced')
+        
+        if strategy == 'none':
+            logger.info("No class weights applied")
+            return None
+        
+        if strategy != 'balanced':
+            logger.warning(f"Unknown class_weight_strategy: {strategy}. Using 'balanced'.")
+            strategy = 'balanced'
+        
+        logger.info(f"Computing class weights (strategy: {strategy})")
+        
+        # Compute weights for each target separately
+        weights_h1n1 = self._compute_weights_for_target(y.iloc[:, 0])
+        weights_seasonal = self._compute_weights_for_target(y.iloc[:, 1])
+        
+        # Average weights across targets
+        weights = {
+            0: (weights_h1n1[0] + weights_seasonal[0]) / 2.0,
+            1: (weights_h1n1[1] + weights_seasonal[1]) / 2.0,
+        }
+        
+        logger.info(f"Class weights: {weights}")
+        return weights
+
+    def _compute_weights_for_target(self, y: pd.Series) -> Dict[int, float]:
+        """
+        Compute class weights for a single target (binary classification).
+        
+        Args:
+            y: Target labels (0 or 1)
+            
+        Returns:
+            Dict with weights for class 0 and 1
+        """
+        # Count class occurrences
+        n_class_0 = (y == 0).sum()
+        n_class_1 = (y == 1).sum()
+        total = len(y)
+        
+        # Inverse of class frequency
+        weight_0 = total / (2 * n_class_0) if n_class_0 > 0 else 1.0
+        weight_1 = total / (2 * n_class_1) if n_class_1 > 0 else 1.0
+        
+        return {0: weight_0, 1: weight_1}
 
     def apply_smote(
         self,
@@ -508,8 +1022,60 @@ class TrainingEngine:
             - TODO: Return augmented X, y
             - TODO: Handle multilabel case (apply SMOTE per target or jointly?)
         """
-        # TODO: Implement
-        pass
+        use_smote = self.training_config.get('use_smote', False)
+        
+        if not use_smote:
+            logger.info("SMOTE not enabled")
+            return X, y
+        
+        try:
+            from imblearn.over_sampling import SMOTE
+        except ImportError:
+            logger.warning("imbalanced-learn not installed. Skipping SMOTE.")
+            return X, y
+        
+        logger.info(f"Applying SMOTE (sampling_strategy={sampling_strategy})")
+        
+        # For multilabel case, apply SMOTE to both targets using combined labels
+        # Create combined label (0,0), (0,1), (1,0), (1,1)
+        y_combined = y.iloc[:, 0].astype(str) + '_' + y.iloc[:, 1].astype(str)
+        
+        # Apply SMOTE
+        # sampling_strategy should be 'auto' or a float between 0 and 1
+        strategy_param = 'auto' if sampling_strategy == 1.0 else sampling_strategy
+        
+        smote = SMOTE(
+            sampling_strategy=strategy_param,  # type: ignore
+            random_state=self.training_config.get('random_seed', 42),
+            k_neighbors=5
+        )
+        
+        try:
+            result = smote.fit_resample(X, y_combined)
+            X_resampled = result[0]
+            y_combined_resampled = result[1]
+            
+            # Reconstruct separate target columns from combined labels
+            y_h1n1 = []
+            y_seasonal = []
+            for label_val in y_combined_resampled:
+                label_str = str(label_val)  # Type: ensure it's a string
+                h1n1, seasonal = label_str.split('_')
+                y_h1n1.append(int(h1n1))
+                y_seasonal.append(int(seasonal))
+            
+            # Create new y dataframe
+            y_resampled = pd.DataFrame({
+                y.columns[0]: y_h1n1,
+                y.columns[1]: y_seasonal,
+            })
+            
+            logger.info(f"SMOTE complete. New shape: X {X_resampled.shape}, y {y_resampled.shape}")
+            return pd.DataFrame(X_resampled, columns=X.columns), y_resampled
+            
+        except Exception as e:
+            logger.warning(f"SMOTE failed: {e}. Using original data.")
+            return X, y
 
     def tune_threshold(
         self,
@@ -544,8 +1110,102 @@ class TrainingEngine:
             - TODO: Find threshold maximizing metric
             - TODO: Return optimal threshold
         """
-        # TODO: Implement
-        pass
+        from sklearn.metrics import (
+            roc_auc_score,
+            f1_score,
+            precision_score,
+            recall_score,
+            accuracy_score,
+        )
+        
+        # Generate candidate thresholds
+        thresholds = np.linspace(0.0, 1.0, 101)
+        best_threshold = 0.5
+        best_score = -np.inf
+        
+        metric_lower = metric.lower()
+        
+        for threshold in thresholds:
+            # Convert probabilities to binary predictions
+            y_pred = (y_val_proba > threshold).astype(int)
+            
+            # Compute specified metric
+            if metric_lower == 'auc':
+                # For AUC, we use raw probabilities
+                score = roc_auc_score(y_val_true, y_val_proba)
+            elif metric_lower == 'f1':
+                score = f1_score(y_val_true, y_pred, zero_division=0)
+            elif metric_lower == 'precision':
+                score = precision_score(y_val_true, y_pred, zero_division=0)
+            elif metric_lower == 'recall':
+                score = recall_score(y_val_true, y_pred, zero_division=0)
+            elif metric_lower == 'accuracy':
+                score = accuracy_score(y_val_true, y_pred)
+            else:
+                logger.warning(f"Unknown metric: {metric}. Using accuracy.")
+                score = accuracy_score(y_val_true, y_pred)
+            
+            # Update best if needed
+            if score > best_score:
+                best_score = score
+                best_threshold = threshold
+        
+        # Clamp threshold to valid range
+        best_threshold = np.clip(best_threshold, 0.0, 1.0)
+        
+        return best_threshold
+
+    def apply_threshold_tuning(
+        self,
+        fold_results: List[FoldResults],
+        metric: str = "auc",
+    ) -> Dict[str, float]:
+        """
+        Find optimal classification thresholds per vaccine using CV fold predictions.
+        
+        Takes accumulated validation predictions from all CV folds and finds
+        the optimal threshold for each vaccine that maximizes the specified metric.
+        
+        Args:
+            fold_results: List of FoldResults from cross-validation
+            metric: Metric to optimize ('auc', 'f1', 'precision', 'recall', 'accuracy')
+            
+        Returns:
+            Dictionary with thresholds for each vaccine:
+            {'h1n1_vaccine': float, 'seasonal_vaccine': float}
+            
+        Example:
+            >>> cv_results = engine.run_cv(X, y)
+            >>> thresholds = engine.apply_threshold_tuning(cv_results.fold_results)
+            >>> print(f"H1N1 threshold: {thresholds['h1n1_vaccine']:.3f}")
+            >>> print(f"Seasonal threshold: {thresholds['seasonal_vaccine']:.3f}")
+        """
+        logger.info(f"\n=== Threshold Tuning ({metric.upper()}) ===")
+        
+        # Collect all validation predictions and labels across folds
+        y_val_all = np.vstack([fold.y_val_true for fold in fold_results])
+        y_val_proba_all = np.vstack([fold.y_val_proba for fold in fold_results])
+        
+        # For each vaccine, find optimal threshold
+        thresholds = {}
+        
+        # H1N1 vaccine (column 0)
+        y_h1n1_true = y_val_all[:, 0]
+        y_h1n1_proba = y_val_proba_all[:, 0]
+        threshold_h1n1 = self.tune_threshold(y_h1n1_true, y_h1n1_proba, metric)
+        thresholds['h1n1_vaccine'] = threshold_h1n1
+        
+        logger.info(f"H1N1 vaccine threshold: {threshold_h1n1:.4f}")
+        
+        # Seasonal vaccine (column 1)
+        y_seasonal_true = y_val_all[:, 1]
+        y_seasonal_proba = y_val_proba_all[:, 1]
+        threshold_seasonal = self.tune_threshold(y_seasonal_true, y_seasonal_proba, metric)
+        thresholds['seasonal_vaccine'] = threshold_seasonal
+        
+        logger.info(f"Seasonal vaccine threshold: {threshold_seasonal:.4f}")
+        
+        return thresholds
 
     def compute_fold_metrics_dual(
         self,
@@ -597,18 +1257,18 @@ class TrainingEngine:
         brier_mean = (brier_h1n1 + brier_seasonal) / 2.0
         
         return {
-            'auroc_h1n1': auroc_h1n1,
-            'auroc_seasonal': auroc_seasonal,
-            'auroc_mean': auroc_mean,
-            'accuracy_h1n1': accuracy_h1n1,
-            'accuracy_seasonal': accuracy_seasonal,
-            'accuracy_mean': accuracy_mean,
-            'f1_h1n1': f1_h1n1,
-            'f1_seasonal': f1_seasonal,
-            'f1_mean': f1_mean,
-            'brier_h1n1': brier_h1n1,
-            'brier_seasonal': brier_seasonal,
-            'brier_mean': brier_mean,
+            'auroc_h1n1': float(auroc_h1n1),
+            'auroc_seasonal': float(auroc_seasonal),
+            'auroc_mean': float(auroc_mean),
+            'accuracy_h1n1': float(accuracy_h1n1),
+            'accuracy_seasonal': float(accuracy_seasonal),
+            'accuracy_mean': float(accuracy_mean),
+            'f1_h1n1': float(f1_h1n1),
+            'f1_seasonal': float(f1_seasonal),
+            'f1_mean': float(f1_mean),
+            'brier_h1n1': float(brier_h1n1),
+            'brier_seasonal': float(brier_seasonal),
+            'brier_mean': float(brier_mean),
         }
 
     def aggregate_fold_metrics(

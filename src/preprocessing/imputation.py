@@ -15,7 +15,7 @@ See CONTEXT_REPORT.md for analysis of missing data patterns in the dataset.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Any, Union
 import pandas as pd
 import numpy as np
 from sklearn.impute import KNNImputer as SklearnKNNImputer
@@ -454,9 +454,11 @@ class KNNImputation(ImputationStrategy):
         self.feature_names = list(X.columns)
         
         # Create and fit sklearn's KNNImputer
+        # Type cast: ensure weights is 'uniform' or 'distance'
+        weights_param: Union[str, Any] = 'uniform' if isinstance(self.weights, str) and self.weights == 'uniform' else 'distance'
         self.fit_params['knn_imputer'] = SklearnKNNImputer(
             n_neighbors=self.n_neighbors,
-            weights=self.weights
+            weights=weights_param  # type: ignore
         )
         
         # Fit the KNN imputer on training data (numeric columns)
@@ -587,9 +589,10 @@ class OrdinalStringKNNImputation(ImputationStrategy):
         self.fit_params['reverse_maps'] = reverse_maps
         
         # Step 2: Fit KNN imputer on encoded numeric data
+        weights_param: Union[str, Any] = 'uniform' if isinstance(self.weights, str) and self.weights == 'uniform' else 'distance'
         self.fit_params['knn_imputer'] = SklearnKNNImputer(
             n_neighbors=self.n_neighbors,
-            weights=self.weights
+            weights=weights_param  # type: ignore
         )
         self.fit_params['knn_imputer'].fit(X_encoded)
         
@@ -761,9 +764,10 @@ class CategoricalKNNImputation(ImputationStrategy):
         self.fit_params['reverse_maps'] = reverse_maps
         
         # Step 2: Fit KNN imputer on encoded numeric data
+        weights_param: Union[str, Any] = 'uniform' if isinstance(self.weights, str) and self.weights == 'uniform' else 'distance'
         self.fit_params['knn_imputer'] = SklearnKNNImputer(
             n_neighbors=self.n_neighbors,
-            weights=self.weights
+            weights=weights_param  # type: ignore
         )
         self.fit_params['knn_imputer'].fit(X_encoded)
         
@@ -996,8 +1000,20 @@ class FlagAsMissingImputation(ImputationStrategy):
             - TODO: Fit base strategy on X
             - TODO: Store which columns have any missing values
         """
-        # TODO: Implement
-        pass
+        # Track which columns have missing values
+        self.missing_columns_ = X.columns[X.isnull().any()].tolist()
+        
+        # Create and fit base imputer
+        if self.base_strategy == 'mean':
+            from sklearn.impute import SimpleImputer
+            self.base_imputer = SimpleImputer(strategy='mean')
+            self.base_imputer.fit(X.select_dtypes(include=[np.number]))
+        else:  # mode
+            from sklearn.impute import SimpleImputer
+            self.base_imputer = SimpleImputer(strategy='most_frequent')
+            self.base_imputer.fit(X)
+        
+        return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """
@@ -1009,8 +1025,23 @@ class FlagAsMissingImputation(ImputationStrategy):
             - TODO: Column names: 'missing_' + original_column_name
             - TODO: Return DataFrame with original features + indicators
         """
-        # TODO: Implement
-        pass
+        X = X.copy()
+        
+        # Create indicator columns for originally missing values
+        for col in self.missing_columns_:
+            X[f'missing_{col}'] = X[col].isnull().astype(int)
+        
+        # Apply base imputation
+        numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+        if numeric_cols and self.base_imputer is not None:
+            X[numeric_cols] = self.base_imputer.transform(X[numeric_cols])
+        
+        # Fill remaining missing categorical values
+        for col in X.columns:
+            if X[col].isnull().any():
+                X[col].fillna(X[col].mode()[0] if len(X[col].mode()) > 0 else 'unknown', inplace=True)
+        
+        return X
 
 
 class TypeBasedImputation(ImputationStrategy):

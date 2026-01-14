@@ -436,6 +436,7 @@ class OneHotEncoder(FeatureEncoder):
     def _compute_output_feature_names(self) -> None:
         """
         Compute the list of output feature names after one-hot encoding.
+        Sanitizes category names to be compatible with XGBoost.
         """
         output_names = []
         
@@ -444,7 +445,14 @@ class OneHotEncoder(FeatureEncoder):
                 # Add one-hot encoded columns for this categorical feature
                 categories = self.fit_params['categories'][feature]['categories_to_keep']
                 for cat in categories:
-                    output_names.append(f"{feature}_{cat}")
+                    # Sanitize category name for XGBoost compatibility
+                    # XGBoost doesn't allow <, >, [, ] in feature names
+                    sanitized_cat = str(cat)
+                    sanitized_cat = sanitized_cat.replace('<', 'lt')
+                    sanitized_cat = sanitized_cat.replace('>', 'gt')
+                    sanitized_cat = sanitized_cat.replace('[', '').replace(']', '')
+                    sanitized_cat = sanitized_cat.replace('(', '').replace(')', '')
+                    output_names.append(f"{feature}_{sanitized_cat}")
             else:
                 # Keep non-categorical features as-is
                 output_names.append(feature)
@@ -476,7 +484,13 @@ class OneHotEncoder(FeatureEncoder):
                 categories = self.fit_params['categories'][feature]['categories_to_keep']
                 
                 for cat in categories:
-                    col_name = f"{feature}_{cat}"
+                    # Sanitize category name to match _compute_output_feature_names
+                    sanitized_cat = str(cat)
+                    sanitized_cat = sanitized_cat.replace('<', 'lt')
+                    sanitized_cat = sanitized_cat.replace('>', 'gt')
+                    sanitized_cat = sanitized_cat.replace('[', '').replace(']', '')
+                    sanitized_cat = sanitized_cat.replace('(', '').replace(')', '')
+                    col_name = f"{feature}_{sanitized_cat}"
                     # Create binary column: 1 if feature == cat, else 0
                     X_transformed[col_name] = (X[feature] == cat).astype(int)
             else:

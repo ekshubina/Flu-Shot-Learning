@@ -36,7 +36,9 @@ encoding:
     household:
       type: ordinal  # Numeric (already scaled)
     geographic:
-      type: ordinal  # Ordinal region codes
+      type: onehot  # Categorical geographic features
+      parameters:
+        drop_first: true
     concern:
       type: ordinal  # Ordinal concern/knowledge scales
     employment:
