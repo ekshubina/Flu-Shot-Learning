@@ -1,0 +1,92 @@
+# MICE (Multivariate Imputation by Chained Equations) Configuration
+# Uses sklearn's IterativeImputer for sophisticated multivariate imputation
+# Learns relationships between features to fill missing values contextually
+
+# Data configuration
+data:
+  train_features_path: data/training_set_features.csv
+  train_labels_path: data/training_set_labels.csv
+  test_features_path: data/test_set_features.csv
+  submission_format_path: data/submission_format.csv
+  random_seed: 42
+  test_size: 0.2
+  cv_folds: 5
+
+# MICE imputation strategy
+# IterativeImputer models relationships between features using regression
+# Iteratively refines imputations to be consistent with feature relationships
+imputation:
+  strategy: mice
+  mice_iterations: 10  # Number of iterations for convergence
+
+# Feature encoding configuration
+encoding:
+  strategies:
+    opinion:
+      type: ordinal  # Preserve order for Likert scales
+    behavioral:
+      type: ordinal  # Binary 0/1, order preserved
+    medical:
+      type: ordinal  # Binary and ordinal features
+    demographic:
+      type: onehot  # Categorical demographics
+      parameters:
+        drop_first: true
+    household:
+      type: ordinal  # Numeric (already scaled)
+    geographic:
+      type: ordinal  # Ordinal region codes
+    concern:
+      type: ordinal  # Ordinal concern/knowledge scales
+    employment:
+      type: onehot  # Categorical employment
+      parameters:
+        drop_first: true
+        handle_unknown: ignore  # For test set categories
+  
+  # Features to drop (optional)
+  drop_features: []
+
+# Model configuration
+model:
+  model_type: logistic_regression
+  hyperparameters:
+    C: 1.0  # Inverse regularization strength
+    max_iter: 1000
+    solver: lbfgs
+    class_weight: balanced  # Handle class imbalance
+    random_state: 42
+
+# Training configuration
+training:
+  batch_size: null  # Full batch
+  learning_rate: null  # N/A for logistic regression
+  epochs: 1  # Single epoch (no iterative training)
+  early_stopping: false
+  validation_fraction: 0.1
+  verbose: false
+
+# Calibration configuration
+calibration:
+  method: platt  # Platt scaling for probability calibration
+  cv_method: stratified_kfold
+  cv_folds: 5
+
+# Evaluation configuration
+evaluation:
+  metrics:
+    - roc_auc
+    - accuracy
+    - precision
+    - recall
+    - f1
+  compute_calibration: true
+  plot_roc: true
+  plot_calibration: true
+  plot_confusion_matrix: false
+
+# Tracking configuration
+tracking:
+  log_path: experiments_mice.csv
+  log_hyperparameters: true
+  log_metrics: true

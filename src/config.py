@@ -14,6 +14,62 @@ from pathlib import Path
 import json
 
 
+# Feature type constants for type-based imputation
+# These are based on the problem definition and ordinal/nominal semantics
+
+ORDINAL_COLUMNS = [
+    # Concern & Knowledge (2)
+    "h1n1_concern",
+    "h1n1_knowledge",
+    # Opinions (6) - All Likert scale 1-5
+    "opinion_h1n1_vacc_effective",
+    "opinion_h1n1_risk",
+    "opinion_h1n1_sick_from_vacc",
+    "opinion_seas_vacc_effective",
+    "opinion_seas_risk",
+    "opinion_seas_sick_from_vacc",
+    # Ordinal demographics (3) - have natural order
+    "age_group",
+    "education",
+    "income_poverty",
+]
+
+NOMINAL_COLUMNS = [
+    # Categorical demographics and employment (9)
+    "race",
+    "sex",
+    "marital_status",
+    "rent_or_own",
+    "employment_status",
+    "hhs_geo_region",
+    "census_msa",
+    "employment_industry",
+    "employment_occupation",
+]
+
+BINARY_NUMERIC_COLUMNS = [
+    # Behavioral (7)
+    "behavioral_antiviral_meds",
+    "behavioral_avoidance",
+    "behavioral_face_mask",
+    "behavioral_wash_hands",
+    "behavioral_large_gatherings",
+    "behavioral_outside_home",
+    "behavioral_touch_face",
+    # Medical recommendations & status (5)
+    "doctor_recc_h1n1",
+    "doctor_recc_seasonal",
+    "chronic_med_condition",
+    "child_under_6_months",
+    "health_worker",
+    # Other (1)
+    "health_insurance",
+    # Household (2)
+    "household_adults",
+    "household_children",
+]
+
+
 @dataclass
 class DataConfig:
     """
@@ -44,7 +100,7 @@ class DataConfig:
 @dataclass
 class ImputationConfig:
     """
-    Configuration for missing value imputation strategy.
+    Configuration for missing value imputation strategy (single strategy for all columns).
     
     Attributes:
         strategy: Name of imputation strategy to use
@@ -59,6 +115,62 @@ class ImputationConfig:
     mice_iterations: int = 10
     fill_value: float = 0.0
     drop_threshold: float = 0.5
+
+
+@dataclass
+class TypeBasedImputationConfig:
+    """
+    Configuration for type-based imputation with different strategies per feature type.
+    
+    Applies different imputation strategies to different feature types:
+    - Ordinal features: mean, median, knn, or mice
+    - Nominal features: mode or mice
+    - Binary numeric features: treated as ordinal (mean, median, knn, or mice)
+    
+    This enables flexible strategy combinations, e.g.:
+    - ordinal_strategy='mean', nominal_strategy='mode' (default)
+    - ordinal_strategy='knn', nominal_strategy='mode' (advanced)
+    - ordinal_strategy='mice', nominal_strategy='mice' (multivariate)
+    
+    Attributes:
+        type: Strategy type (always 'type_based' for this config)
+        ordinal_strategy: Strategy for ordinal and binary numeric columns
+                         (mean, median, knn, mice; default: 'mean')
+        nominal_strategy: Strategy for nominal columns
+                         (mode, mice; default: 'mode')
+        ordinal_params: Dict of parameters for ordinal strategy
+                       (e.g., {'n_neighbors': 5} for knn; default: {})
+        nominal_params: Dict of parameters for nominal strategy
+                       (e.g., {} for mode; default: {})
+    """
+    type: str = "type_based"
+    ordinal_strategy: str = "mean"
+    nominal_strategy: str = "mode"
+    ordinal_params: Dict[str, Any] = field(default_factory=dict)
+    nominal_params: Dict[str, Any] = field(default_factory=dict)
+    
+    def __post_init__(self):
+        """
+        Validate configuration at initialization time.
+        
+        Raises:
+            ValueError: If strategy combination is invalid
+        """
+        valid_ordinal_strategies = {'mean', 'median', 'knn', 'mice'}
+        valid_nominal_strategies = {'mode', 'mice'}
+        
+        if self.ordinal_strategy not in valid_ordinal_strategies:
+            raise ValueError(
+                f"Invalid ordinal_strategy '{self.ordinal_strategy}'. "
+                f"Must be one of: {sorted(valid_ordinal_strategies)}"
+            )
+        
+        if self.nominal_strategy not in valid_nominal_strategies:
+            raise ValueError(
+                f"Invalid nominal_strategy '{self.nominal_strategy}'. "
+                f"KNN imputation is not suitable for nominal features. "
+                f"Must be one of: {sorted(valid_nominal_strategies)}"
+            )
 
 
 @dataclass
@@ -341,11 +453,27 @@ class PipelineConfig:
         def filter_dict(d, expected_fields):
             return {k: v for k, v in d.items() if k in expected_fields}
         
+        # Determine which imputation config class to use based on 'type' field
+        if imputation_dict:
+            imputation_type = imputation_dict.get("type")
+            if imputation_type == "type_based":
+                # Use TypeBasedImputationConfig for type-based imputation
+                imputation_config = TypeBasedImputationConfig(
+                    **filter_dict(imputation_dict, {f.name for f in TypeBasedImputationConfig.__dataclass_fields__.values()})
+                )
+            else:
+                # Use ImputationConfig for single-strategy imputation (default)
+                imputation_config = ImputationConfig(
+                    **filter_dict(imputation_dict, {f.name for f in ImputationConfig.__dataclass_fields__.values()})
+                )
+        else:
+            imputation_config = ImputationConfig()
+        
         return cls(
             name=config_dict.get("name", "default_pipeline"),
             description=config_dict.get("description", "Default ML pipeline configuration"),
             data=DataConfig(**filter_dict(data_dict, {f.name for f in DataConfig.__dataclass_fields__.values()})) if data_dict else DataConfig(),
-            imputation=ImputationConfig(**filter_dict(imputation_dict, {f.name for f in ImputationConfig.__dataclass_fields__.values()})) if imputation_dict else ImputationConfig(),
+            imputation=imputation_config,
             encoding=EncodingConfig(**filter_dict(encoding_dict, {f.name for f in EncodingConfig.__dataclass_fields__.values()})) if encoding_dict else EncodingConfig(),
             model=ModelConfig(**filter_dict(model_dict, {f.name for f in ModelConfig.__dataclass_fields__.values()})) if model_dict else ModelConfig(),
             training=TrainingConfig(**filter_dict(training_dict, {f.name for f in TrainingConfig.__dataclass_fields__.values()})) if training_dict else TrainingConfig(),

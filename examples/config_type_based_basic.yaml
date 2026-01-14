@@ -1,0 +1,62 @@
+# Type-Based Imputation Configuration: Basic (Mean + Mode)
+# Applies different imputation strategies to ordinal vs. nominal features
+# Ordinal features (opinions, concern): mean imputation
+# Nominal features (demographics, employment): mode imputation
+
+# Data configuration
+data:
+  train_features_path: data/training_set_features.csv
+  train_labels_path: data/training_set_labels.csv
+  test_features_path: data/test_set_features.csv
+  submission_format_path: data/submission_format.csv
+  random_seed: 42
+  test_size: 0.2
+  cv_folds: 5
+
+# Type-based imputation strategy
+imputation:
+  type: 'type_based'
+  ordinal_strategy: 'mean'    # For opinions, concern, knowledge, binary features
+  nominal_strategy: 'mode'    # For demographics, employment (categorical)
+  ordinal_params: {}          # No params needed for mean
+  nominal_params: {}          # No params needed for mode
+
+# Feature encoding configuration
+encoding:
+  strategies:
+    opinion:
+      type: ordinal  # Preserve order for Likert scales
+    behavioral:
+      type: ordinal  # Binary 0/1, order preserved
+    medical:
+      type: ordinal  # Binary and ordinal features
+    demographic:
+      type: onehot  # Categorical demographics
+      parameters:
+        drop_first: true
+    household:
+      type: ordinal  # Numeric (already scaled)
+    geographic:
+      type: ordinal  # Ordinal region codes
+    concern:
+      type: ordinal  # Ordinal concern/knowledge scales
+    employment:
+      type: onehot  # Categorical employment
+      parameters:
+        drop_first: true
+        handle_unknown: ignore  # For test set categories
+  
+  # Features to drop (optional)
+  drop_features: []
+
+# Model configuration
+model:
+  model_type: logistic_regression
+  random_seed: 42
+  n_jobs: -1
+
+# Training configuration
+training:
+  cv_strategy: stratified_kfold
+  cv_folds: 5
+  test_size: 0.2

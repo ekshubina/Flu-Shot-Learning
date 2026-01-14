@@ -37,6 +37,7 @@ from src.preprocessing.imputation import (
     KNNImputation,
     MICEImputation,
     FlagAsMissingImputation,
+    TypeBasedImputation,
 )
 from src.preprocessing.encoding import (
     FeatureEncoder,
@@ -243,8 +244,12 @@ class PreprocessingPipeline:
         """
         Create imputation strategy instance based on config.
         
-        Creates the appropriate imputer class based on imputation_config.strategy.
-        Passes strategy-specific parameters from config.
+        Creates the appropriate imputer class based on imputation_config.strategy
+        or imputation_config.type.
+        
+        Supports two configuration formats:
+        1. Single-strategy: ImputationConfig with strategy field
+        2. Type-based: TypeBasedImputationConfig with type='type_based'
         
         Args:
             None (uses self.imputation_config)
@@ -255,6 +260,39 @@ class PreprocessingPipeline:
         Raises:
             ValueError: If strategy name not recognized
         """
+        # Check if this is a type-based imputation config
+        config_type = getattr(self.imputation_config, 'type', None)
+        
+        if config_type == 'type_based':
+            # Import column type constants here to avoid circular imports
+            from src.config import ORDINAL_COLUMNS, NOMINAL_COLUMNS, BINARY_NUMERIC_COLUMNS
+            
+            # Combine ordinal and binary numeric columns into one group
+            all_ordinal_cols = ORDINAL_COLUMNS + BINARY_NUMERIC_COLUMNS
+            
+            ordinal_strategy = getattr(
+                self.imputation_config, 'ordinal_strategy', 'mean'
+            )
+            nominal_strategy = getattr(
+                self.imputation_config, 'nominal_strategy', 'mode'
+            )
+            ordinal_params = getattr(
+                self.imputation_config, 'ordinal_params', {}
+            )
+            nominal_params = getattr(
+                self.imputation_config, 'nominal_params', {}
+            )
+            
+            return TypeBasedImputation(
+                ordinal_columns=all_ordinal_cols,
+                nominal_columns=NOMINAL_COLUMNS,
+                ordinal_strategy=ordinal_strategy,
+                nominal_strategy=nominal_strategy,
+                ordinal_params=ordinal_params,
+                nominal_params=nominal_params,
+            )
+        
+        # Fall back to single-strategy imputation (backward compatibility)
         strategy = self.imputation_config.strategy.lower()
         
         if strategy == "drop_rows":
@@ -282,7 +320,7 @@ class PreprocessingPipeline:
             mice_iterations = getattr(
                 self.imputation_config, 'mice_iterations', 10
             )
-            return MICEImputation(n_imputations=mice_iterations)
+            return MICEImputation(max_iter=mice_iterations)
         
         elif strategy == "flag_as_missing":
             return FlagAsMissingImputation()
@@ -390,6 +428,7 @@ __all__ = [
     "KNNImputation",
     "MICEImputation",
     "FlagAsMissingImputation",
+    "TypeBasedImputation",
     "FeatureEncoder",
     "OrdinalEncoder",
     "OneHotEncoder",

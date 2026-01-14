@@ -19,6 +19,8 @@ from typing import Optional, List, Dict, Tuple
 import pandas as pd
 import numpy as np
 from sklearn.impute import KNNImputer as SklearnKNNImputer
+from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import IterativeImputer
 
 
 class ImputationStrategy(ABC):
@@ -455,6 +457,363 @@ class KNNImputation(ImputationStrategy):
         return X_imputed
 
 
+class OrdinalStringKNNImputation(ImputationStrategy):
+    """
+    Strategy that imputes missing ordinal values using KNN on encoded ordinal ranks.
+    
+    Handles ordinal features stored as strings (e.g., '18-34', '35-44', '45-54', ...)
+    by encoding them to their ordinal rank (0, 1, 2, ...), applying KNN imputation,
+    then decoding back to original ordinal values.
+    
+    Process:
+    1. Determine ordinal order for each column (sorted list of unique values)
+    2. Encode ordinal values: first value → 0, second → 1, etc. (NaN → NaN)
+    3. Apply KNN imputation on encoded numeric ranks
+    4. Decode imputed ranks back to original ordinal values
+    5. Return ordinal column with missing values filled
+    
+    Example:
+    - age_group: '18-34' → 0, '35-44' → 1, '45-54' → 2, '55-64' → 3, '65+' → 4
+    - education: '<12 Years' → 0, '12 Years' → 1, 'Some College' → 2, 'College Grad' → 3
+    
+    Configuration:
+        - n_neighbors: Number of neighbors to use (default: 5)
+        - weights: 'uniform' (equal weight) or 'distance' (weighted by distance)
+    
+    Suitable for:
+    - Ordinal features with natural order but string representation
+    - Age groups, education levels, income brackets
+    - Preserving ordinal structure in imputations
+    
+    Trade-offs:
+    - Pro: Handles ordinal strings, preserves order, KNN effectiveness on numeric
+    - Con: Assumes ordinal values are in sorted order; precision may degrade in decoding
+    """
+
+    def __init__(
+        self,
+        feature_names: Optional[List[str]] = None,
+        n_neighbors: int = 5,
+        weights: str = "uniform",
+    ):
+        """
+        Initialize ordinal string KNN imputation.
+        
+        Args:
+            feature_names: List of feature column names (all should be ordinal)
+            n_neighbors: Number of neighbors to use (default: 5)
+            weights: 'uniform' or 'distance' weighting (default: 'uniform')
+        """
+        super().__init__(feature_names)
+        self.n_neighbors = n_neighbors
+        self.weights = weights
+
+    def fit(self, X: pd.DataFrame) -> "OrdinalStringKNNImputation":
+        """
+        Prepare KNN structure for ordinal string data.
+        
+        For each ordinal column:
+        1. Extract unique values (excluding NaN) and sort them
+        2. Create mapping: ordinal_value → rank (0, 1, 2, ...)
+        3. Store mapping for later decoding
+        4. Encode data to numeric ranks
+        5. Fit KNN imputer on encoded numeric data
+        
+        Args:
+            X: Training features DataFrame with ordinal string values (may have NaN)
+            
+        Returns:
+            self (for method chaining)
+        """
+        if X.empty:
+            raise ValueError("Training data X cannot be empty")
+        
+        self.feature_names = list(X.columns)
+        
+        # Step 1: Create ordinal mappings for each column
+        ordinal_maps = {}   # column_name → {ordinal_value: rank}
+        reverse_maps = {}   # column_name → {rank: ordinal_value}
+        X_encoded = X.copy()
+        
+        for col in X.columns:
+            # Get unique values (excluding NaN) and sort them
+            # Sorted order defines the ordinal rank
+            unique_vals = sorted(X[col].dropna().unique())
+            
+            # Create mapping: value → rank (0, 1, 2, ...)
+            col_map = {val: idx for idx, val in enumerate(unique_vals)}
+            # Reverse map: rank → value
+            rev_map = {idx: val for val, idx in col_map.items()}
+            
+            ordinal_maps[col] = col_map
+            reverse_maps[col] = rev_map
+            
+            # Encode column: ordinal_value → rank, NaN → NaN
+            X_encoded[col] = X[col].map(col_map)
+        
+        self.fit_params['ordinal_maps'] = ordinal_maps
+        self.fit_params['reverse_maps'] = reverse_maps
+        
+        # Step 2: Fit KNN imputer on encoded numeric data
+        self.fit_params['knn_imputer'] = SklearnKNNImputer(
+            n_neighbors=self.n_neighbors,
+            weights=self.weights
+        )
+        self.fit_params['knn_imputer'].fit(X_encoded)
+        
+        self.fitted = True
+        return self
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """
+        Impute missing ordinal string values using KNN on encoded ranks.
+        
+        Process:
+        1. Encode ordinal columns using fitted mappings
+        2. Apply KNN imputation on encoded numeric ranks
+        3. For imputed ranks, round to nearest integer and decode to ordinal values
+        4. Return DataFrame with original ordinal string values
+        
+        Args:
+            X: Features DataFrame with potential missing values
+            
+        Returns:
+            DataFrame with missing values filled using original ordinal values
+            
+        Raises:
+            ValueError: If strategy not fitted yet
+        """
+        if not self.fitted:
+            raise ValueError("OrdinalStringKNNImputation must be fit before transform")
+        
+        ordinal_maps = self.fit_params['ordinal_maps']
+        reverse_maps = self.fit_params['reverse_maps']
+        
+        # Step 1: Encode ordinal columns
+        X_encoded = X.copy()
+        missing_mask = X.isna()  # Track where values were missing
+        
+        for col in X.columns:
+            if col in ordinal_maps:
+                col_map = ordinal_maps[col]
+                # Map ordinal values to ranks; unmapped values (shouldn't happen) → NaN
+                X_encoded[col] = X[col].map(col_map)
+        
+        # Step 2: Apply KNN imputation on encoded data
+        X_imputed_array = self.fit_params['knn_imputer'].transform(X_encoded)
+        X_imputed = pd.DataFrame(X_imputed_array, columns=X.columns, index=X.index)
+        
+        # Step 3: Decode imputed ranks back to ordinal values
+        X_decoded = X.copy()  # Start with original (to preserve non-missing values)
+        
+        for col in X.columns:
+            if col in reverse_maps:
+                rev_map = reverse_maps[col]
+                
+                # For each value that was originally missing, decode the imputed rank
+                col_missing_mask = missing_mask[col]
+                if col_missing_mask.any():
+                    # Get imputed ranks for this column
+                    imputed_ranks = X_imputed[col][col_missing_mask]
+                    
+                    # Round to nearest integer (since KNN returns floats)
+                    imputed_ranks_int = np.round(imputed_ranks).astype(int)
+                    
+                    # Clamp to valid range [0, max_rank]
+                    max_rank = max(rev_map.keys())
+                    imputed_ranks_int = np.clip(imputed_ranks_int, 0, max_rank)
+                    
+                    # Map ranks back to ordinal values
+                    decoded_values = [rev_map[rank] for rank in imputed_ranks_int]
+                    
+                    # Update decoded column with imputed ordinal values
+                    X_decoded.loc[col_missing_mask, col] = decoded_values
+        
+        return X_decoded
+
+
+class CategoricalKNNImputation(ImputationStrategy):
+    """
+    Strategy that imputes missing categorical values using KNN on encoded categories.
+    
+    Handles categorical features (strings) by encoding them to ordinal numbers,
+    applying KNN imputation, then decoding back to original categories using the
+    mode (most common value) of the k nearest neighbors.
+    
+    Process:
+    1. Encode each categorical column: category → integer (0, 1, 2, ...)
+    2. Apply KNN imputation on encoded numeric values
+    3. For each imputed value, find the original category from nearest neighbors
+    4. Return categorical column with missing values filled
+    
+    Configuration:
+        - n_neighbors: Number of neighbors to use (default: 5)
+        - weights: 'uniform' (equal weight) or 'distance' (weighted by distance)
+    
+    Suitable for:
+    - Categorical features (strings or objects)
+    - Mixed categorical/numeric feature sets
+    - Preserving categorical structure in imputations
+    
+    Trade-offs:
+    - Pro: Handles categorical data properly, captures local patterns
+    - Con: Computationally expensive, requires encoding/decoding, may lose some precision
+    
+    Implementation notes:
+    - Stores category mappings for each column (fit_params['category_maps'])
+    - Uses KNNImputer internally on encoded values
+    - Decodes predictions back using nearest neighbors' modes
+    """
+
+    def __init__(
+        self,
+        feature_names: Optional[List[str]] = None,
+        n_neighbors: int = 5,
+        weights: str = "uniform",
+    ):
+        """
+        Initialize categorical KNN imputation.
+        
+        Args:
+            feature_names: List of feature column names (all should be categorical)
+            n_neighbors: Number of neighbors to use (default: 5)
+            weights: 'uniform' or 'distance' weighting (default: 'uniform')
+        """
+        super().__init__(feature_names)
+        self.n_neighbors = n_neighbors
+        self.weights = weights
+
+    def fit(self, X: pd.DataFrame) -> "CategoricalKNNImputation":
+        """
+        Prepare KNN structure for categorical data.
+        
+        For each categorical column:
+        1. Extract all unique categories (including NaN)
+        2. Create mapping: category → integer code
+        3. Store mapping for later decoding
+        4. Encode data to numeric values
+        5. Fit KNN imputer on encoded numeric data
+        
+        Args:
+            X: Training features DataFrame with categorical values (may have NaN)
+            
+        Returns:
+            self (for method chaining)
+        """
+        if X.empty:
+            raise ValueError("Training data X cannot be empty")
+        
+        self.feature_names = list(X.columns)
+        
+        # Step 1: Create category mappings for each column
+        category_maps = {}  # column_name → {category: code}
+        reverse_maps = {}   # column_name → {code: category}
+        X_encoded = X.copy()
+        
+        for col in X.columns:
+            # Get unique categories (excluding NaN)
+            categories = X[col].dropna().unique()
+            
+            # Create mapping: category → integer code (0, 1, 2, ...)
+            col_map = {cat: idx for idx, cat in enumerate(sorted(categories))}
+            # Reverse map: code → category
+            rev_map = {idx: cat for cat, idx in col_map.items()}
+            
+            category_maps[col] = col_map
+            reverse_maps[col] = rev_map
+            
+            # Encode column: category → code, NaN → NaN
+            X_encoded[col] = X[col].map(col_map)
+        
+        self.fit_params['category_maps'] = category_maps
+        self.fit_params['reverse_maps'] = reverse_maps
+        
+        # Step 2: Fit KNN imputer on encoded numeric data
+        self.fit_params['knn_imputer'] = SklearnKNNImputer(
+            n_neighbors=self.n_neighbors,
+            weights=self.weights
+        )
+        self.fit_params['knn_imputer'].fit(X_encoded)
+        
+        # Step 3: Store training data (encoded) for neighbor lookups
+        self.fit_params['X_train_encoded'] = X_encoded.fillna(-999)  # NaN → -999 as placeholder
+        
+        self.fitted = True
+        return self
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """
+        Impute missing categorical values using KNN on encoded data.
+        
+        Process:
+        1. Encode categorical columns using fitted mappings
+        2. Apply KNN imputation on encoded values
+        3. For imputed values, find k nearest neighbors' modes
+        4. Decode back to original categories
+        5. Return DataFrame with original categorical values
+        
+        Args:
+            X: Features DataFrame with potential missing values
+            
+        Returns:
+            DataFrame with missing values filled using original categories
+            
+        Raises:
+            ValueError: If strategy not fitted yet
+        """
+        if not self.fitted:
+            raise ValueError("CategoricalKNNImputation must be fit before transform")
+        
+        category_maps = self.fit_params['category_maps']
+        reverse_maps = self.fit_params['reverse_maps']
+        
+        # Step 1: Encode categorical columns
+        X_encoded = X.copy()
+        missing_mask = X.isna()  # Track where values were missing
+        
+        for col in X.columns:
+            if col in category_maps:
+                col_map = category_maps[col]
+                # Map categories to codes; unmapped values → NaN
+                X_encoded[col] = X[col].map(col_map)
+        
+        # Step 2: Apply KNN imputation on encoded data
+        X_imputed_array = self.fit_params['knn_imputer'].transform(X_encoded)
+        X_imputed = pd.DataFrame(X_imputed_array, columns=X.columns, index=X.index)
+        
+        # Step 3: Decode imputed values back to categories
+        X_decoded = X.copy()  # Start with original (to preserve non-missing values)
+        
+        for col in X.columns:
+            if col in reverse_maps:
+                rev_map = reverse_maps[col]
+                
+                # For each value that was originally missing, decode the imputed code
+                col_missing_mask = missing_mask[col]
+                if col_missing_mask.any():
+                    # Get imputed codes for this column
+                    imputed_codes = X_imputed[col][col_missing_mask]
+                    
+                    # Round to nearest integer and decode
+                    imputed_codes_int = np.round(imputed_codes).astype(int)
+                    
+                    # Map codes back to categories (with safety for out-of-range)
+                    decoded_values = []
+                    for code in imputed_codes_int:
+                        # Get the category for this code, or use mode if code not in mapping
+                        if code in rev_map:
+                            decoded_values.append(rev_map[code])
+                        else:
+                            # Fallback to mode (most common category)
+                            mode_cat = X[col].mode()[0] if len(X[col].mode()) > 0 else list(rev_map.values())[0]
+                            decoded_values.append(mode_cat)
+                    
+                    # Update decoded column with imputed categories
+                    X_decoded.loc[col_missing_mask, col] = decoded_values
+        
+        return X_decoded
+
+
 class MICEImputation(ImputationStrategy):
     """
     Strategy using Multivariate Imputation by Chained Equations (MICE).
@@ -507,28 +866,47 @@ class MICEImputation(ImputationStrategy):
         """
         Initialize MICE on training data.
         
-        Implementation notes:
-            - TODO: Store training data stats (means/modes for initial imputation)
-            - TODO: Identify features with missing values
-            - TODO: Identify predictor features for each target
+        Fits IterativeImputer (sklearn's implementation of MICE) on training data.
+        IterativeImputer uses estimators to model relationships between features
+        and imputes missing values iteratively.
         """
-        # TODO: Implement
-        pass
+        if X.empty:
+            raise ValueError("Training data X cannot be empty")
+        
+        # Store feature names
+        self.feature_names = list(X.columns)
+        
+        # Create and fit sklearn's IterativeImputer (MICE implementation)
+        # BayesianRidge is the default estimator and works well for mixed types
+        self.fit_params['mice_imputer'] = IterativeImputer(
+            max_iter=self.max_iter,
+            random_state=self.random_state,
+            verbose=0
+        )
+        
+        # Fit the imputer on training data
+        self.fit_params['mice_imputer'].fit(X)
+        self.fitted = True
+        
+        return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """
         Impute missing values using MICE algorithm.
         
-        Implementation notes:
-            - TODO: Start with mean/mode imputation
-            - TODO: For each iteration (max_iter times):
-            -   TODO: For each feature with missing values:
-            -     TODO: Fit regression using other features as predictors
-            -     TODO: Predict missing values
-            - TODO: Return final imputed DataFrame
+        Uses the fitted IterativeImputer to impute missing values in new data
+        by modeling feature relationships learned from the training data.
         """
-        # TODO: Implement
-        pass
+        if not self.fitted:
+            raise ValueError("MICEImputation strategy must be fit before transform")
+        
+        # Apply the fitted MICE imputer
+        X_imputed_array = self.fit_params['mice_imputer'].transform(X)
+        
+        # Convert back to DataFrame with original column names
+        X_imputed = pd.DataFrame(X_imputed_array, columns=X.columns, index=X.index)
+        
+        return X_imputed
 
 
 class FlagAsMissingImputation(ImputationStrategy):
@@ -601,3 +979,270 @@ class FlagAsMissingImputation(ImputationStrategy):
         """
         # TODO: Implement
         pass
+
+
+class TypeBasedImputation(ImputationStrategy):
+    """
+    Strategy that applies different imputation methods to different feature types.
+    
+    Enables flexible, per-type strategy specification:
+    - Ordinal features (and binary numeric): mean, median, knn, or mice
+    - Nominal features: mode or mice
+    
+    Composes existing strategy classes (MeanImputation, ModeImputation, KNNImputation)
+    rather than reimplementing logic. Applies each strategy to its designated columns.
+    
+    Configuration example (YAML):
+        imputation:
+            type: 'type_based'
+            ordinal_strategy: 'mean'  # or knn, median
+            nominal_strategy: 'mode'  # only option for nominal
+            ordinal_params: {n_neighbors: 5}  # for knn strategy
+            nominal_params: {}
+    
+    Attributes:
+        ordinal_columns: List of ordinal and binary numeric feature names
+        nominal_columns: List of nominal feature names
+        ordinal_strategy: Strategy name for ordinal columns ('mean', 'median', 'knn', 'mice')
+        nominal_strategy: Strategy name for nominal columns ('mode', 'mice')
+        ordinal_params: Parameters dict for ordinal strategy
+        nominal_params: Parameters dict for nominal strategy
+        ordinal_imputer: Fitted imputation strategy for ordinal columns
+        nominal_imputer: Fitted imputation strategy for nominal columns
+    """
+    
+    def __init__(
+        self,
+        ordinal_columns: List[str],
+        nominal_columns: List[str],
+        ordinal_strategy: str = "mean",
+        nominal_strategy: str = "mode",
+        ordinal_params: Optional[Dict[str, Any]] = None,
+        nominal_params: Optional[Dict[str, Any]] = None,
+    ):
+        """
+        Initialize type-based imputation strategy.
+        
+        Args:
+            ordinal_columns: List of ordinal/binary numeric feature names
+            nominal_columns: List of nominal feature names
+            ordinal_strategy: Strategy for ordinal columns (mean, median, knn, mice)
+            nominal_strategy: Strategy for nominal columns (mode, mice)
+            ordinal_params: Parameters dict for ordinal strategy (default: {})
+            nominal_params: Parameters dict for nominal strategy (default: {})
+        """
+        super().__init__()
+        self.ordinal_columns = ordinal_columns
+        self.nominal_columns = nominal_columns
+        self.ordinal_strategy = ordinal_strategy
+        self.nominal_strategy = nominal_strategy
+        self.ordinal_params = ordinal_params or {}
+        self.nominal_params = nominal_params or {}
+        
+        self.ordinal_imputer = None
+        self.nominal_imputer = None
+    
+    def fit(self, X: pd.DataFrame) -> "TypeBasedImputation":
+        """
+        Fit imputation strategies on training data.
+        
+        Creates strategy instances for each type and fits them on respective columns.
+        Special handling for KNN:
+        - Numeric ordinal columns: standard KNNImputation
+        - Categorical nominal columns: CategoricalKNNImputation (encode→KNN→decode)
+        - Non-numeric ordinal columns: fall back to mode
+        
+        Args:
+            X: Training features DataFrame with potential missing values
+            
+        Returns:
+            self (for method chaining)
+            
+        Raises:
+            ValueError: If X is empty or doesn't contain required columns
+        """
+        if X.empty:
+            raise ValueError("Training data X cannot be empty")
+        
+        self.feature_names = list(X.columns)
+        
+        # Filter to columns that actually exist in X
+        ordinal_cols = [c for c in self.ordinal_columns if c in X.columns]
+        nominal_cols = [c for c in self.nominal_columns if c in X.columns]
+        
+        if not ordinal_cols and not nominal_cols:
+            raise ValueError(
+                f"No valid columns found. ordinal_columns: {self.ordinal_columns}, "
+                f"nominal_columns: {self.nominal_columns}, X.columns: {list(X.columns)}"
+            )
+        
+        # ===== Handle Ordinal Columns =====
+        if ordinal_cols:
+            self.ordinal_imputer = self._create_strategy(
+                self.ordinal_strategy,
+                ordinal_cols,
+                self.ordinal_params,
+                feature_type='ordinal',
+                X_sample=X[ordinal_cols]
+            )
+            self.ordinal_imputer.fit(X[ordinal_cols])
+        
+        # ===== Handle Nominal Columns =====
+        if nominal_cols:
+            self.nominal_imputer = self._create_strategy(
+                self.nominal_strategy,
+                nominal_cols,
+                self.nominal_params,
+                feature_type='nominal',
+                X_sample=X[nominal_cols]
+            )
+            self.nominal_imputer.fit(X[nominal_cols])
+        
+        self.fitted = True
+        return self
+    
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """
+        Apply fitted imputation strategies to dataset.
+        
+        Applies each strategy to its designated columns, then combines results.
+        
+        Args:
+            X: Features DataFrame with potential missing values
+            
+        Returns:
+            DataFrame with missing values filled by appropriate strategies
+            
+        Raises:
+            ValueError: If strategy not fitted yet
+        """
+        if not self.fitted:
+            raise ValueError("TypeBasedImputation must be fit before transform")
+        
+        if not self.feature_names:
+            raise ValueError("Feature names not set. Call fit() first.")
+        
+        # Filter to columns that actually exist in X
+        ordinal_cols = [c for c in self.ordinal_columns if c in X.columns]
+        nominal_cols = [c for c in self.nominal_columns if c in X.columns]
+        
+        # Start with a copy to preserve all columns including those not imputed
+        result = X.copy()
+        imputed_parts = {}
+        
+        # Apply ordinal imputation if imputer exists and columns are present
+        if self.ordinal_imputer is not None and ordinal_cols:
+            X_ordinal = self.ordinal_imputer.transform(X[ordinal_cols])
+            imputed_parts.update({col: X_ordinal[col] for col in ordinal_cols})
+        
+        # Apply nominal imputation if imputer exists and columns are present
+        if self.nominal_imputer is not None and nominal_cols:
+            X_nominal = self.nominal_imputer.transform(X[nominal_cols])
+            imputed_parts.update({col: X_nominal[col] for col in nominal_cols})
+        
+        # Update the result dataframe with imputed columns
+        for col, values in imputed_parts.items():
+            result[col] = values
+        
+        # Ensure column order matches original X
+        return result[list(X.columns)]
+    
+    def _create_strategy(
+        self,
+        strategy_name: str,
+        columns: List[str],
+        params: Dict[str, Any],
+        feature_type: str = 'unknown',
+        X_sample: Optional[pd.DataFrame] = None,
+    ) -> ImputationStrategy:
+        """
+        Create appropriate imputation strategy instance.
+        
+        Selects the best imputation strategy based on:
+        - strategy_name: requested strategy (mean, knn, mode, mice)
+        - feature_type: ordinal, nominal, or unknown
+        - X_sample: sample data to check if columns are numeric or categorical
+        
+        Special handling:
+        - KNN + ordinal string features → OrdinalStringKNNImputation
+        - KNN + nominal categorical features → CategoricalKNNImputation
+        - KNN + numeric features → standard KNNImputation
+        - mode + any features → ModeImputation
+        
+        Args:
+            strategy_name: Name of strategy (mean, median, knn, mode, mice)
+            columns: List of columns for this strategy
+            params: Parameters dict for the strategy
+            feature_type: Type hint (ordinal, nominal, unknown)
+            X_sample: Sample DataFrame to check feature types
+            
+        Returns:
+            Initialized ImputationStrategy instance
+            
+        Raises:
+            ValueError: If strategy name not recognized
+        """
+        strategy_lower = strategy_name.lower()
+        
+        if strategy_lower == "mean":
+            return MeanImputation(feature_names=columns)
+        
+        elif strategy_lower == "median":
+            # Median imputation - use mean for now (TODO: implement)
+            return MeanImputation(feature_names=columns)
+        
+        elif strategy_lower == "knn":
+            n_neighbors = params.get("n_neighbors", 5)
+            
+            # Check feature types to decide which KNN variant to use
+            if X_sample is not None and len(columns) > 0:
+                # Check if any columns are non-numeric (object dtype)
+                has_non_numeric = any(X_sample[col].dtype == 'object' for col in columns if col in X_sample.columns)
+                
+                if has_non_numeric:
+                    # For ordinal features: use OrdinalStringKNNImputation
+                    if feature_type == 'ordinal':
+                        return OrdinalStringKNNImputation(
+                            feature_names=columns,
+                            n_neighbors=n_neighbors
+                        )
+                    # For nominal features: use CategoricalKNNImputation
+                    elif feature_type == 'nominal':
+                        return CategoricalKNNImputation(
+                            feature_names=columns,
+                            n_neighbors=n_neighbors
+                        )
+            
+            # Otherwise use standard numeric KNN
+            return KNNImputation(feature_names=columns, n_neighbors=n_neighbors)
+        
+        elif strategy_lower == "mode":
+            return ModeImputation(feature_names=columns)
+        
+        elif strategy_lower == "mice":
+            max_iter = params.get("max_iter", 10)
+            
+            # Check if columns are numeric or string - MICE only works on numeric
+            if X_sample is not None and len(columns) > 0:
+                has_non_numeric = any(X_sample[col].dtype == 'object' for col in columns if col in X_sample.columns)
+                
+                if has_non_numeric:
+                    # For ordinal string features, fall back to KNN-based approach
+                    if feature_type == 'ordinal':
+                        n_neighbors = params.get("n_neighbors", 5)
+                        return OrdinalStringKNNImputation(
+                            feature_names=columns,
+                            n_neighbors=n_neighbors
+                        )
+                    # For nominal string features, use mode
+                    elif feature_type == 'nominal':
+                        return ModeImputation(feature_names=columns)
+            
+            # For numeric columns, use standard MICE
+            return MICEImputation(feature_names=columns, max_iter=max_iter)
+        
+        else:
+            raise ValueError(
+                f"Unknown imputation strategy: {strategy_name}. "
+                f"Must be one of: mean, median, knn, mode, mice"
+            )

@@ -1,0 +1,94 @@
+# Type-Based MICE Configuration
+# Uses MICE for numeric/ordinal columns, mode for categorical columns
+# This is the proper way to handle mixed data types with MICE
+
+# Data configuration
+data:
+  train_features_path: data/training_set_features.csv
+  train_labels_path: data/training_set_labels.csv
+  test_features_path: data/test_set_features.csv
+  submission_format_path: data/submission_format.csv
+  random_seed: 42
+  test_size: 0.2
+  cv_folds: 5
+
+# Type-based imputation: MICE for numeric/ordinal, mode for categorical
+imputation:
+  type: 'type_based'
+  ordinal_strategy: 'mice'      # MICE for numeric/ordinal features
+  nominal_strategy: 'mode'      # Mode for categorical features
+  ordinal_params:
+    max_iter: 10                # Number of MICE iterations
+  nominal_params: {}
+
+# Feature encoding configuration
+encoding:
+  strategies:
+    opinion:
+      type: ordinal  # Preserve order for Likert scales
+    behavioral:
+      type: ordinal  # Binary 0/1, order preserved
+    medical:
+      type: ordinal  # Binary and ordinal features
+    demographic:
+      type: onehot  # Categorical demographics
+      parameters:
+        drop_first: true
+    household:
+      type: ordinal  # Numeric (already scaled)
+    geographic:
+      type: ordinal  # Ordinal region codes
+    concern:
+      type: ordinal  # Ordinal concern/knowledge scales
+    employment:
+      type: onehot  # Categorical employment
+      parameters:
+        drop_first: true
+        handle_unknown: ignore  # For test set categories
+  
+  # Features to drop (optional)
+  drop_features: []
+
+# Model configuration
+model:
+  model_type: logistic_regression
+  hyperparameters:
+    C: 1.0  # Inverse regularization strength
+    max_iter: 1000
+    solver: lbfgs
+    class_weight: balanced  # Handle class imbalance
+    random_state: 42
+
+# Training configuration
+training:
+  batch_size: null  # Full batch
+  learning_rate: null  # N/A for logistic regression
+  epochs: 1  # Single epoch (no iterative training)
+  early_stopping: false
+  validation_fraction: 0.1
+  verbose: false
+
+# Calibration configuration
+calibration:
+  method: platt  # Platt scaling for probability calibration
+  cv_method: stratified_kfold
+  cv_folds: 5
+
+# Evaluation configuration
+evaluation:
+  metrics:
+    - roc_auc
+    - accuracy
+    - precision
+    - recall
+    - f1
+  compute_calibration: true
+  plot_roc: true
+  plot_calibration: true
+  plot_confusion_matrix: false
+
+# Tracking configuration
+tracking:
+  log_path: experiments_mice_typebased.csv
+  log_hyperparameters: true
+  log_metrics: true

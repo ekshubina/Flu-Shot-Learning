@@ -282,7 +282,14 @@ def run_pipeline(config: PipelineConfig, run_name: str = "default_run") -> dict:
             config.encoding
         )
         
-        logger.info(f"  • Imputation strategy: {config.imputation.strategy}")
+        # Format imputation strategy info based on config type
+        from src.config import TypeBasedImputationConfig
+        if isinstance(config.imputation, TypeBasedImputationConfig):
+            imputation_info = f"type_based (ordinal={config.imputation.ordinal_strategy}, nominal={config.imputation.nominal_strategy})"
+        else:
+            imputation_info = config.imputation.strategy
+        
+        logger.info(f"  • Imputation strategy: {imputation_info}")
         logger.info(f"  • Encoding strategy: {config.encoding}")
         logger.info(f"  ✓ Preprocessing pipeline created in {time.time() - stage_start:.2f}s")
         
@@ -376,13 +383,23 @@ def run_pipeline(config: PipelineConfig, run_name: str = "default_run") -> dict:
         cv_preds_h1n1_calibrated = calibrator_h1n1.transform(cv_preds_h1n1)
         cv_preds_seasonal_calibrated = calibrator_seasonal.transform(cv_preds_seasonal)
         
-        # Validate calibrated predictions
-        if np.any(np.isnan(cv_preds_h1n1_calibrated)):
+        # Convert to numpy arrays if needed and ensure 1D
+        cv_preds_h1n1_calibrated = np.asarray(cv_preds_h1n1_calibrated, dtype=np.float64)
+        cv_preds_seasonal_calibrated = np.asarray(cv_preds_seasonal_calibrated, dtype=np.float64)
+        
+        # Ensure arrays are 1D
+        if cv_preds_h1n1_calibrated.ndim > 1:
+            cv_preds_h1n1_calibrated = cv_preds_h1n1_calibrated.ravel()
+        if cv_preds_seasonal_calibrated.ndim > 1:
+            cv_preds_seasonal_calibrated = cv_preds_seasonal_calibrated.ravel()
+        
+        # Validate calibrated predictions (skip if scalar)
+        if cv_preds_h1n1_calibrated.size > 1 and np.any(np.isnan(cv_preds_h1n1_calibrated)):
             raise ValueError(
                 f"Calibrated H1N1 predictions contain NaN values. "
                 f"Count: {np.sum(np.isnan(cv_preds_h1n1_calibrated))}/{len(cv_preds_h1n1_calibrated)}"
             )
-        if np.any(np.isnan(cv_preds_seasonal_calibrated)):
+        if cv_preds_seasonal_calibrated.size > 1 and np.any(np.isnan(cv_preds_seasonal_calibrated)):
             raise ValueError(
                 f"Calibrated seasonal predictions contain NaN values. "
                 f"Count: {np.sum(np.isnan(cv_preds_seasonal_calibrated))}/{len(cv_preds_seasonal_calibrated)}"
