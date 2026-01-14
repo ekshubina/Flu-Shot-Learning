@@ -221,6 +221,36 @@ class EncodingConfig:
 
 
 @dataclass
+class FeatureEngineeringConfig:
+    """
+    Configuration for feature engineering operations.
+    
+    Feature engineering applies transformations to raw features after imputation
+    but before encoding. Operations include:
+    - Missing value indicators: Create binary flags for originally-missing values
+    - Employment simplification: Consolidate employment features
+    - Interaction terms: Create cross-product features
+    - Polynomial features: Create polynomial transformations
+    
+    Attributes:
+        missing_flags: Whether to create binary indicators for missing values (default: False)
+        missing_flag_features: List of features to create missing indicators for (default: [])
+        simplify_employment: Whether to simplify employment features (default: False)
+        create_interactions: Whether to create interaction terms (default: False)
+        interaction_pairs: List of (feature1, feature2) pairs for interactions (default: [])
+        create_polynomials: Whether to create polynomial features (default: False)
+        polynomial_degree: Degree of polynomial features (default: 2)
+    """
+    missing_flags: bool = False
+    missing_flag_features: List[str] = field(default_factory=list)
+    simplify_employment: bool = False
+    create_interactions: bool = False
+    interaction_pairs: List[tuple] = field(default_factory=list)
+    create_polynomials: bool = False
+    polynomial_degree: int = 2
+
+
+@dataclass
 class ModelConfig:
     """
     Configuration for model selection and hyperparameters.
@@ -400,6 +430,7 @@ class PipelineConfig:
         description: Longer description of the pipeline experiment
         data: DataConfig instance
         imputation: ImputationConfig instance
+        feature_engineering: FeatureEngineeringConfig instance
         encoding: EncodingConfig instance
         model: ModelConfig instance
         training: TrainingConfig instance
@@ -413,6 +444,7 @@ class PipelineConfig:
     description: str = "Default ML pipeline configuration"
     data: DataConfig = field(default_factory=DataConfig)
     imputation: ImputationConfig = field(default_factory=ImputationConfig)
+    feature_engineering: FeatureEngineeringConfig = field(default_factory=FeatureEngineeringConfig)
     encoding: EncodingConfig = field(default_factory=EncodingConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
@@ -440,6 +472,7 @@ class PipelineConfig:
         # Extract sub-configs or use defaults
         data_dict = config_dict.get("data", {})
         imputation_dict = config_dict.get("imputation", {})
+        feature_engineering_dict = config_dict.get("feature_engineering", {})
         encoding_dict = config_dict.get("encoding", {})
         model_dict = config_dict.get("model", {})
         training_dict = config_dict.get("training", {})
@@ -474,6 +507,7 @@ class PipelineConfig:
             description=config_dict.get("description", "Default ML pipeline configuration"),
             data=DataConfig(**filter_dict(data_dict, {f.name for f in DataConfig.__dataclass_fields__.values()})) if data_dict else DataConfig(),
             imputation=imputation_config,
+            feature_engineering=FeatureEngineeringConfig(**filter_dict(feature_engineering_dict, {f.name for f in FeatureEngineeringConfig.__dataclass_fields__.values()})) if feature_engineering_dict else FeatureEngineeringConfig(),
             encoding=EncodingConfig(**filter_dict(encoding_dict, {f.name for f in EncodingConfig.__dataclass_fields__.values()})) if encoding_dict else EncodingConfig(),
             model=ModelConfig(**filter_dict(model_dict, {f.name for f in ModelConfig.__dataclass_fields__.values()})) if model_dict else ModelConfig(),
             training=TrainingConfig(**filter_dict(training_dict, {f.name for f in TrainingConfig.__dataclass_fields__.values()})) if training_dict else TrainingConfig(),

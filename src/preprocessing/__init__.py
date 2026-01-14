@@ -97,24 +97,29 @@ class PreprocessingPipeline:
         >>> feature_names = pipeline.get_feature_names()
     """
     
-    def __init__(self, imputation_config: Any, encoding_config: Any):
+    def __init__(self, imputation_config: Any, encoding_config: Any, feature_engineering_config: Any = None):
         """
         Initialize preprocessing pipeline with configuration objects.
         
         Args:
             imputation_config: ImputationConfig object specifying imputation strategy
             encoding_config: EncodingConfig object specifying encoding strategies
+            feature_engineering_config: Optional FeatureEngineeringConfig for feature engineering
             
         Raises:
             TypeError: If config objects are not valid configuration objects
         """
         self.imputation_config = imputation_config
         self.encoding_config = encoding_config
+        self.feature_engineering_config = feature_engineering_config
         
         self.imputer = None
         self.ordinal_encoder = None
         self.onehot_encoder = None
         self.fitted = False
+        
+        # Track missing value columns for later
+        self._missing_flag_columns = {}
     
     def fit(self, X: pd.DataFrame) -> "PreprocessingPipeline":
         """
@@ -142,14 +147,22 @@ class PreprocessingPipeline:
         if X.empty:
             raise ValueError("Cannot fit PreprocessingPipeline on empty DataFrame")
         
-        # Step 1: Fit imputation strategy on raw training data
+        # Step 1: Create missing value flags BEFORE imputation (capture original missing positions)
+        if self.feature_engineering_config and self.feature_engineering_config.missing_flags:
+            X = self._create_missing_indicators(X, fit=True)
+        
+        # Step 2: Fit imputation strategy on raw training data
         self.imputer = self._create_imputer()
         self.imputer.fit(X)
         
-        # Step 2: Apply imputation to training data
+        # Step 3: Apply imputation to training data
         X_imputed = self.imputer.transform(X)
         
-        # Step 3: Fit encoding strategies on imputed training data
+        # Step 4: Apply employment simplification if enabled
+        if self.feature_engineering_config and self.feature_engineering_config.simplify_employment:
+            X_imputed = self._simplify_employment_features(X_imputed, fit=True)
+        
+        # Step 5: Fit encoding strategies on imputed training data
         self._fit_encoders(X_imputed)
         
         self.fitted = True
@@ -160,9 +173,11 @@ class PreprocessingPipeline:
         Apply fitted imputation and encoding to dataset.
         
         Applies the transformations learned during fit() to new data:
-        1. Apply fitted imputation (fills missing values using training statistics)
-        2. Apply fitted ordinal encoding (preserves order for ordinal features)
-        3. Apply fitted one-hot encoding (creates binary indicators for categorical)
+        1. Create missing value indicators (using training columns)
+        2. Apply fitted imputation (fills missing values using training statistics)
+        3. Apply employment simplification (using training logic)
+        4. Apply fitted ordinal encoding (preserves order for ordinal features)
+        5. Apply fitted one-hot encoding (creates binary indicators for categorical)
         
         This method uses ONLY the statistics learned during fit() and does NOT
         learn any new parameters from the input data.
@@ -187,13 +202,21 @@ class PreprocessingPipeline:
         if self.imputer is None or self.ordinal_encoder is None or self.onehot_encoder is None:
             raise ValueError("Pipeline components not properly initialized. Call fit() first.")
         
-        # Step 1: Apply imputation
+        # Step 1: Apply missing value indicators (using columns tracked during fit)
+        if self.feature_engineering_config and self.feature_engineering_config.missing_flags:
+            X = self._create_missing_indicators(X, fit=False)
+        
+        # Step 2: Apply imputation
         X_imputed = self.imputer.transform(X)
         
-        # Step 2: Apply ordinal encoding
+        # Step 3: Apply employment simplification (using fit logic)
+        if self.feature_engineering_config and self.feature_engineering_config.simplify_employment:
+            X_imputed = self._simplify_employment_features(X_imputed, fit=False)
+        
+        # Step 4: Apply ordinal encoding
         X_ordinal = self.ordinal_encoder.transform(X_imputed)
         
-        # Step 3: Apply one-hot encoding
+        # Step 5: Apply one-hot encoding
         X_encoded = self.onehot_encoder.transform(X_ordinal)
         
         return X_encoded
@@ -239,6 +262,82 @@ class PreprocessingPipeline:
         output_names = self.onehot_encoder.get_feature_names()
         
         return output_names
+    
+    def _create_missing_indicators(self, X: pd.DataFrame, fit: bool = False) -> pd.DataFrame:
+        """
+        Create binary indicator columns for missing values.
+        
+        Args:
+            X: Input DataFrame
+            fit: If True, learn which columns to create indicators for.
+                 If False, use previously learned columns.
+            
+        Returns:
+            DataFrame with added missing indicator columns
+        """
+        if not self.feature_engineering_config or not self.feature_engineering_config.missing_flags:
+            return X.copy()
+        
+        X_with_flags = X.copy()
+        features_to_flag = self.feature_engineering_config.missing_flag_features
+        
+        if fit:
+            # During fitting, track which columns we're creating flags for
+            self._missing_flag_columns = {}
+            for feature in features_to_flag:
+                if feature in X.columns:
+                    flag_col = f"{feature}_missing"
+                    X_with_flags[flag_col] = X[feature].isna().astype(int)
+                    self._missing_flag_columns[feature] = flag_col
+        else:
+            # During transform, use previously tracked columns
+            for feature, flag_col in self._missing_flag_columns.items():
+                if feature in X.columns:
+                    X_with_flags[flag_col] = X[feature].isna().astype(int)
+        
+        return X_with_flags
+    
+    def _simplify_employment_features(self, X: pd.DataFrame, fit: bool = False) -> pd.DataFrame:
+        """
+        Simplify employment features.
+        
+        Converts employment_status to a binary 'is_employed' feature while keeping
+        the column for encoding (the encoder will handle it as categorical).
+        
+        Args:
+            X: Input DataFrame (after imputation)
+            fit: If True, learn employment simplification rules.
+                 If False, apply learned rules.
+            
+        Returns:
+            DataFrame with simplified employment features
+        """
+        if not self.feature_engineering_config or not self.feature_engineering_config.simplify_employment:
+            return X.copy()
+        
+        X_simplified = X.copy()
+        
+        # Convert employment_status to a simplified form
+        # Map to general categories: employed, unemployed, not_in_workforce, unknown
+        if 'employment_status' in X_simplified.columns:
+            employment_status = X_simplified['employment_status'].astype(str).str.lower()
+            
+            # Create simplified mapping
+            simplified_status = employment_status.map({
+                'employed': 'employed',
+                'unemployed': 'unemployed',
+                'not in labor force': 'not_in_workforce',
+                'nan': 'unknown',
+                'none': 'unknown'
+            })
+            
+            # Handle unmapped values (keep as 'unknown' for safety)
+            simplified_status = simplified_status.fillna('unknown')
+            
+            # Replace the original column with simplified version
+            X_simplified['employment_status'] = simplified_status
+        
+        return X_simplified
     
     def _create_imputer(self) -> ImputationStrategy:
         """

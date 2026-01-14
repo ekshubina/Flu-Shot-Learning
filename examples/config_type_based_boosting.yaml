@@ -1,0 +1,182 @@
+# Type-Based Imputation Configuration: XGBoost/LightGBM Optimized
+# Applies different imputation strategies to ordinal vs. nominal features
+# Ordinal features (opinions, concern): mean imputation
+# Nominal features (demographics, employment): mode imputation
+# WITHOUT excessive feature engineering (trees learn non-linearity automatically)
+# Expected AUROC: 0.86-0.88 (tree-based advantage)
+
+# Data configuration
+data:
+  train_features_path: data/training_set_features.csv
+  train_labels_path: data/training_set_labels.csv
+  test_features_path: data/test_set_features.csv
+  submission_format_path: data/submission_format.csv
+  random_seed: 42
+  test_size: 0.2
+  cv_folds: 5
+
+# Type-based imputation strategy
+imputation:
+  type: 'type_based'
+  ordinal_strategy: 'mean'    # For opinions, concern, knowledge, binary features
+  nominal_strategy: 'mode'    # For demographics, employment (categorical)
+  ordinal_params: {}
+  nominal_params: {}
+
+# Feature engineering configuration (minimal for trees)
+feature_engineering:
+  # Missing value indicator flags (universally helpful)
+  missing_flags: true
+  missing_flag_features:
+    - doctor_recc_h1n1
+    - doctor_recc_seasonal
+    - health_insurance
+  
+  # Employment simplification (reduces feature space noise)
+  simplify_employment: true
+  
+  # Do NOT create interactions (trees learn these automatically through splits)
+  create_interactions: false
+  
+  # Do NOT create polynomials (trees create non-linearity through depth)
+  create_polynomials: false
+
+# Feature encoding configuration (ordinal-preferred for trees)
+encoding:
+  strategies:
+    opinion:
+      type: ordinal  # Preserve order for Likert scales (1-5)
+    behavioral:
+      type: ordinal  # Binary 0/1
+    medical:
+      type: ordinal  # Binary and ordinal features
+    demographic:
+      # For trees, ordinal encoding is preferred (fewer features, faster splits)
+      # But preserve categorical structure where needed
+      type: ordinal
+      parameters: {}
+    household:
+      type: ordinal  # Numeric
+    geographic:
+      type: ordinal  # Ordinal region codes
+    concern:
+      type: ordinal  # Ordinal scales
+    employment:
+      # After employment simplification: is_employed binary + ordinal encoding for employed
+      type: ordinal
+      parameters: {}
+  
+  # Features to drop (optional)
+  drop_features: []
+
+# Model configuration - XGBoost for tree-based approach
+model:
+  model_type: xgboost
+  # Options: logistic_regression, random_forest, xgboost, lightgbm
+  
+  hyperparameters:
+    # XGBoost parameters (tuned for flu vaccine dataset)
+    n_estimators: 150
+    max_depth: 5
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    min_child_weight: 1
+    gamma: 0
+    reg_alpha: 0.01  # L1 regularization (prevent overfitting)
+    reg_lambda: 1.0  # L2 regularization
+    random_state: 42
+    scale_pos_weight: auto  # Handle class imbalance automatically
+    objective: binary:logistic
+    eval_metric: auc
+
+# Training configuration with hyperparameter optimization
+training:
+  cv_strategy: stratified_kfold
+  cv_folds: 5
+  
+  # Enable hyperparameter search
+  hyperparameter_search: true
+  search_strategy: bayesian  # Bayesian optimization (efficient for trees)
+  
+  # Search space for hyperparameters
+  search_space:
+    max_depth: [4, 5, 6, 7, 8]
+    learning_rate: [0.01, 0.03, 0.05, 0.1]
+    subsample: [0.6, 0.7, 0.8, 0.9, 1.0]
+    colsample_bytree: [0.6, 0.7, 0.8, 0.9, 1.0]
+    reg_alpha: [0, 0.01, 0.1]
+    reg_lambda: [0.1, 0.5, 1.0]
+  
+  # Bayesian optimization specifics
+  search_params:
+    n_trials: 40  # Slightly fewer than XGBoost config (type-based is simpler)
+    timeout: 3600  # Maximum time in seconds
+    n_jobs: -1  # Use all cores
+  
+  # Class imbalance handling
+  class_weight_strategy: balanced
+  use_smote: false  # Synthetic oversampling on each fold
+  
+  # Threshold tuning
+  threshold_tuning: true
+  threshold_metric: auroc  # Optimize for AUROC (competition metric)
+
+# Advanced calibration
+calibration:
+  method: temperature_scaling
+  # Options: none, platt_scaling, isotonic, temperature_scaling
+  
+  # Temperature scaling for XGBoost's overconfident predictions
+  calibration_folds: 5
+
+# Comprehensive evaluation
+evaluation:
+  metrics:
+    - auroc  # Primary metric
+    - calibration_error
+    - confusion_matrix
+    - brier_score
+  
+  # Probability threshold (will be tuned if threshold_tuning=true)
+  threshold: adaptive  # Use tuned threshold instead of 0.5
+  
+  # Create visualizations
+  create_plots: true
+  plot_types:
+    - roc_curves
+    - calibration_curve
+    - feature_importance
+    - prediction_confidence
+    - confusion_matrices
+
+# Detailed experiment tracking
+tracking:
+  enabled: true
+  log_path: experiments_type_based_boosting.csv
+  log_metrics:
+    # Per-vaccine metrics
+    - auroc_h1n1
+    - auroc_seasonal
+    - auroc_mean  # Primary metric
+    # Calibration metrics
+    - calibration_error_h1n1
+    - calibration_error_seasonal
+    - brier_score_h1n1
+    - brier_score_seasonal
+    # Hyperparameter values
+    - learning_rate
+    - max_depth
+    - subsample
+
+# Test set prediction
+prediction:
+  output_dir: ./submissions/
+  output_filename: submission_type_based_boosting.csv
+  validate_submission: true
+
+# Logging configuration
+logging:
+  level: INFO  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_file: logs/type_based_boosting_pipeline.log
+  format: '[%(asctime)s] %(name)s - %(levelname)s - %(message)s'

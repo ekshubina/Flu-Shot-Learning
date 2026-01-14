@@ -279,7 +279,8 @@ def run_pipeline(config: PipelineConfig, run_name: str = "default_run") -> dict:
         
         preprocessing_pipeline = PreprocessingPipeline(
             config.imputation,
-            config.encoding
+            config.encoding,
+            config.feature_engineering
         )
         
         # Format imputation strategy info based on config type
@@ -291,6 +292,24 @@ def run_pipeline(config: PipelineConfig, run_name: str = "default_run") -> dict:
         
         logger.info(f"  • Imputation strategy: {imputation_info}")
         logger.info(f"  • Encoding strategy: {config.encoding}")
+        
+        # Log feature engineering operations if enabled
+        if config.feature_engineering and (
+            config.feature_engineering.missing_flags or 
+            config.feature_engineering.simplify_employment or
+            config.feature_engineering.create_interactions or
+            config.feature_engineering.create_polynomials
+        ):
+            logger.info(f"  • Feature engineering enabled:")
+            if config.feature_engineering.missing_flags:
+                logger.info(f"    - Missing value indicators: {config.feature_engineering.missing_flag_features}")
+            if config.feature_engineering.simplify_employment:
+                logger.info(f"    - Employment feature simplification")
+            if config.feature_engineering.create_interactions:
+                logger.info(f"    - Interaction terms: {len(config.feature_engineering.interaction_pairs)} pairs")
+            if config.feature_engineering.create_polynomials:
+                logger.info(f"    - Polynomial features (degree={config.feature_engineering.polynomial_degree})")
+        
         logger.info(f"  ✓ Preprocessing pipeline created in {time.time() - stage_start:.2f}s")
         
         results['stages_completed'].append('preprocessing_pipeline')

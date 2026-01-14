@@ -1,0 +1,172 @@
+# Type-Based Imputation Configuration: Logistic Regression Enhanced
+# Applies different imputation strategies to ordinal vs. nominal features
+# Ordinal features (opinions, concern): mean imputation
+# Nominal features (demographics, employment): mode imputation
+# WITH feature engineering: interactions, polynomials, and missing value flags
+# Expected AUROC: 0.85-0.86 (vs. 0.8441 baseline)
+
+# Data configuration
+data:
+  train_features_path: data/training_set_features.csv
+  train_labels_path: data/training_set_labels.csv
+  test_features_path: data/test_set_features.csv
+  submission_format_path: data/submission_format.csv
+  random_seed: 42
+  test_size: 0.2
+  cv_folds: 5
+
+# Type-based imputation strategy
+imputation:
+  type: 'type_based'
+  ordinal_strategy: 'mean'    # For opinions, concern, knowledge, binary features
+  nominal_strategy: 'mode'    # For demographics, employment (categorical)
+  ordinal_params: {}          # No params needed for mean
+  nominal_params: {}          # No params needed for mode
+
+# Feature engineering configuration
+feature_engineering:
+  # Missing value indicator flags (universally helpful for both LR and trees)
+  missing_flags: true
+  missing_flag_features:
+    - doctor_recc_h1n1
+    - doctor_recc_seasonal
+    - health_insurance
+  
+  # Employment simplification: Replace 50% missing employment industry/occupation
+  # with binary is_employed flag
+  simplify_employment: true
+  
+  # Interaction terms (critical for logistic regression to capture non-linearity)
+  create_interactions: true
+  interaction_groups:
+    # High-impact interactions
+    - [opinion_h1n1_risk, doctor_recc_h1n1]  # Risk opinion × doctor recommendation (strong signal)
+    - [opinion_h1n1_vacc_effective, doctor_recc_h1n1]  # Effectiveness belief × doctor rec
+    - [h1n1_concern, opinion_h1n1_risk]  # Concern × perceived risk (reinforce each other)
+    - [health_insurance, chronic_med_condition]  # Insurance × chronic condition
+    - [opinion_seas_risk, doctor_recc_seasonal]  # Seasonal risk × doctor rec
+    - [opinion_seas_vacc_effective, doctor_recc_seasonal]  # Seasonal effectiveness × rec
+  
+  # Polynomial features (capture non-linear relationships for LR)
+  create_polynomials: true
+  polynomial_degree: 2
+  polynomial_features:
+    - household_adults     # Parents may have different vaccination patterns
+    - household_children   # Presence of children strongly predicts vaccine uptake
+
+# Feature encoding configuration
+encoding:
+  strategies:
+    opinion:
+      type: ordinal  # Preserve order for Likert scales (1-5)
+    behavioral:
+      type: ordinal  # Binary 0/1, order preserved
+    medical:
+      type: ordinal  # Binary and ordinal features
+    demographic:
+      # For LR, one-hot is preferred to capture categorical effects
+      # But preserve ordinal nature where possible (age_group, education, income_poverty)
+      type: onehot
+      parameters:
+        drop_first: true
+        handle_unknown: ignore
+    household:
+      type: ordinal  # Numeric (after polynomial expansion)
+    geographic:
+      type: ordinal  # Ordinal region codes (region 1-10)
+    concern:
+      type: ordinal  # Ordinal concern/knowledge scales
+    employment:
+      type: onehot  # Categorical employment (after simplification)
+      parameters:
+        drop_first: true
+        handle_unknown: ignore
+  
+  # Features to drop (optional)
+  drop_features: []
+
+# Model configuration
+model:
+  model_type: logistic_regression
+  # Options: logistic_regression, random_forest, xgboost, lightgbm
+  
+  hyperparameters:
+    # Logistic Regression parameters
+    penalty: l2
+    C: 1.0  # Inverse regularization strength (higher = less regularization)
+    solver: lbfgs
+    max_iter: 1000
+    random_state: 42
+    class_weight: balanced  # Handle class imbalance
+
+# Training configuration
+training:
+  cv_strategy: stratified_kfold
+  # Options: stratified_kfold, repeated_stratified_kfold
+  
+  cv_folds: 5
+  
+  # Hyperparameter search (NEW: enabled for LR enhancement)
+  hyperparameter_search: true
+  search_strategy: grid  # Grid search for logistic regression
+  
+  # Search space for logistic regression hyperparameters
+  search_space:
+    C: [0.001, 0.01, 0.1, 1.0, 10.0]
+    penalty: [l1, l2]
+  
+  # Class imbalance handling
+  class_weight_strategy: balanced  # Options: balanced, custom, none
+  use_smote: true  # Synthetic oversampling (NEW: enabled for LR)
+  threshold_tuning: true  # Optimize threshold on validation set (NEW: enabled)
+
+# Calibration of probability estimates
+calibration:
+  method: platt
+  # Options: none, platt, isotonic, temperature
+  
+  calibration_folds: 3  # For nested cross-validation
+
+# Evaluation configuration
+evaluation:
+  metrics:
+    - auroc  # Primary metric
+    - calibration_error
+    - confusion_matrix
+    - brier_score
+  
+  # Probability threshold (default 0.5, tuned if threshold_tuning=true)
+  threshold: 0.5
+  
+  # Create visualizations
+  create_plots: true
+  plot_types:
+    - roc_curves
+    - calibration_curve
+    - feature_importance
+    - prediction_confidence
+
+# Experiment tracking
+tracking:
+  enabled: true
+  log_path: experiments_type_based_lr_enhanced.csv
+  log_metrics:
+    - auroc_h1n1
+    - auroc_seasonal
+    - auroc_mean
+    - calibration_error_h1n1
+    - calibration_error_seasonal
+    - brier_score_h1n1
+    - brier_score_seasonal
+
+# Test set prediction
+prediction:
+  output_dir: ./submissions/
+  output_filename: submission_type_based_lr_enhanced.csv
+  validate_submission: true
+
+# Logging configuration
+logging:
+  level: INFO  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_file: logs/type_based_lr_enhanced_pipeline.log
+  format: '[%(asctime)s] %(name)s - %(levelname)s - %(message)s'

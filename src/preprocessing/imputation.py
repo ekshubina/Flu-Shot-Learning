@@ -153,23 +153,34 @@ class DropRowsImputation(ImputationStrategy):
         """
         Fit by analyzing missing data pattern.
         
-        Implementation notes:
-            - TODO: Count missing values per column
-            - TODO: Store as fit_params for reporting
+        Analyzes which columns contain any missing values and stores the pattern
+        for reference. Rows will be dropped during transform().
         """
-        # TODO: Implement
-        pass
+        if X.empty:
+            raise ValueError("Training data X cannot be empty")
+        
+        # Count missing values per column
+        self.fit_params['columns_with_missing'] = [
+            col for col in X.columns if X[col].isna().any()
+        ]
+        self.feature_names = list(X.columns)
+        self.fitted = True
+        
+        return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """
         Remove rows with any missing values.
         
-        Implementation notes:
-            - TODO: Drop rows where any column is NaN
-            - TODO: Return cleaned DataFrame
+        Drops all rows containing any NaN values and returns the cleaned DataFrame.
         """
-        # TODO: Implement
-        pass
+        if not self.fitted:
+            raise ValueError("DropRowsImputation strategy must be fit before transform")
+        
+        # Drop rows with any NaN values
+        X_cleaned = X.dropna()
+        
+        return X_cleaned
 
 
 class DropColumnsImputation(ImputationStrategy):
@@ -212,24 +223,46 @@ class DropColumnsImputation(ImputationStrategy):
         """
         Identify columns to drop based on missing data threshold.
         
-        Implementation notes:
-            - TODO: Compute % missing for each column
-            - TODO: Mark columns exceeding drop_threshold
-            - TODO: Store list of columns to drop in fit_params
+        Computes the percentage of missing values for each column and identifies
+        columns exceeding the drop_threshold. Stores these column names for removal
+        during transform().
         """
-        # TODO: Implement
-        pass
+        if X.empty:
+            raise ValueError("Training data X cannot be empty")
+        
+        if not (0.0 <= self.drop_threshold <= 1.0):
+            raise ValueError(f"drop_threshold must be between 0.0 and 1.0, got {self.drop_threshold}")
+        
+        # Compute % missing per column
+        columns_to_drop = []
+        for col in X.columns:
+            pct_missing = X[col].isna().sum() / len(X)
+            if pct_missing > self.drop_threshold:
+                columns_to_drop.append(col)
+        
+        self.fit_params['columns_to_drop'] = columns_to_drop
+        self.feature_names = list(X.columns)
+        self.fitted = True
+        
+        return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """
         Drop columns marked during fit.
         
-        Implementation notes:
-            - TODO: Drop columns stored in fit_params['columns_to_drop']
-            - TODO: Return DataFrame with dropped columns removed
+        Removes columns that were identified as exceeding the missing data threshold
+        during fitting.
         """
-        # TODO: Implement
-        pass
+        if not self.fitted:
+            raise ValueError("DropColumnsImputation strategy must be fit before transform")
+        
+        # Drop marked columns (only if they exist in X)
+        columns_to_drop = [
+            col for col in self.fit_params['columns_to_drop'] if col in X.columns
+        ]
+        X_reduced = X.drop(columns=columns_to_drop)
+        
+        return X_reduced
 
 
 class MeanImputation(ImputationStrategy):
@@ -340,9 +373,8 @@ class ModeImputation(ImputationStrategy):
         """
         Fill missing values with learned modes.
         
-        Implementation notes:
-            - TODO: For each column with stored mode, fill NaN values
-            - TODO: Return DataFrame with NaN filled
+        Fills missing values in each column with the mode (most common value)
+        learned from the training data.
         """
         if not self.fitted:
             raise ValueError("ModeImputation strategy must be fit before transform")

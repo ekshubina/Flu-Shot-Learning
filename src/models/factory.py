@@ -423,55 +423,154 @@ class XGBoostModel(BaseModel):
         """Initialize XGBoost model."""
         super().__init__(config)
         self.model_type = "xgboost"
+        
+        try:
+            import xgboost as xgb
+        except ImportError:
+            raise ImportError(
+                "xgboost package required for XGBoostModel. "
+                "Install with: pip install xgboost"
+            )
+        
+        # Extract hyperparameters from config
+        hyperparams = {}
+        if config and isinstance(config, dict) and "hyperparameters" in config:
+            hyperparams = config["hyperparameters"]
+        
+        # Set default hyperparameters with config overrides
+        self.n_estimators = hyperparams.get("n_estimators", 100)
+        self.max_depth = hyperparams.get("max_depth", 6)
+        self.learning_rate = hyperparams.get("learning_rate", 0.1)
+        self.subsample = hyperparams.get("subsample", 1.0)
+        self.colsample_bytree = hyperparams.get("colsample_bytree", 1.0)
+        self.reg_lambda = hyperparams.get("reg_lambda", 1.0)
+        self.reg_alpha = hyperparams.get("reg_alpha", 0.0)
+        self.random_state = hyperparams.get("random_state", 42)
+        
+        # Initialize the XGBoost model
+        self._model = xgb.XGBClassifier(
+            n_estimators=self.n_estimators,
+            max_depth=self.max_depth,
+            learning_rate=self.learning_rate,
+            subsample=self.subsample,
+            colsample_bytree=self.colsample_bytree,
+            reg_lambda=self.reg_lambda,
+            reg_alpha=self.reg_alpha,
+            random_state=self.random_state,
+            use_label_encoder=False,
+            eval_metric='logloss'
+        )
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "XGBoostModel":
         """
         Train XGBoost model.
         
-        Implementation notes:
-            - TODO: Check if xgboost is installed
-            - TODO: Store feature names from X.columns
-            - TODO: Create xgboost.XGBClassifier with hyperparameters
-            - TODO: Fit on (X, y) with early stopping if available
-            - TODO: Set self.fitted = True
+        Trains the XGBoost classifier on the provided training data and stores
+        feature importances.
         """
-        # TODO: Implement
-        pass
+        # Store feature names for later use
+        self.feature_names = list(X.columns)
+        
+        # Train the XGBoost model
+        self._model.fit(X, y)
+        
+        # Set fitted flag
+        self.fitted = True
+        
+        # Store feature importances
+        self.feature_importances_ = self._model.feature_importances_
+        
+        return self
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         """
         Return probability predictions.
         
-        Implementation notes:
-            - TODO: Check if fitted
-            - TODO: Call self._model.predict_proba(X)
-            - TODO: Return (n_samples, 2) array
+        Returns probability estimates for binary classification.
         """
-        # TODO: Implement
-        pass
+        if not self.fitted:
+            raise ValueError("Model must be fitted before calling predict_proba(). Call fit() first.")
+        
+        return self._model.predict_proba(X)
 
     def get_feature_importance(self) -> pd.DataFrame:
         """
         Get XGBoost feature importance scores.
         
-        Implementation notes:
-            - TODO: Get importance from self._model.feature_importances_
-            - TODO: Create DataFrame with feature names and importance
-            - TODO: Sort by importance descending
-            - TODO: Handle case where importance sums to zero
+        Returns feature importances as a sorted DataFrame.
         """
-        # TODO: Implement
-        pass
+        if not self.fitted:
+            raise ValueError("Model must be fitted before calling get_feature_importance(). Call fit() first.")
+        
+        # Get importance scores
+        importance_scores = self.feature_importances_
+        
+        # Create DataFrame with feature names and importance
+        importance_df = pd.DataFrame({
+            "feature": self.feature_names,
+            "importance": importance_scores
+        })
+        
+        # Sort by importance descending
+        importance_df = importance_df.sort_values("importance", ascending=False).reset_index(drop=True)
+        
+        return importance_df
 
     def get_params(self, deep: bool = True) -> Dict[str, Any]:
         """Get model parameters."""
-        # TODO: Implement
-        pass
+        params = {
+            "n_estimators": self.n_estimators,
+            "max_depth": self.max_depth,
+            "learning_rate": self.learning_rate,
+            "subsample": self.subsample,
+            "colsample_bytree": self.colsample_bytree,
+            "reg_lambda": self.reg_lambda,
+            "reg_alpha": self.reg_alpha,
+            "random_state": self.random_state,
+        }
+        return params
 
     def set_params(self, **params) -> "XGBoostModel":
         """Set model parameters."""
-        # TODO: Implement
-        pass
+        import xgboost as xgb
+        
+        # Update instance attributes
+        for key, value in params.items():
+            if key == "n_estimators":
+                self.n_estimators = value
+            elif key == "max_depth":
+                self.max_depth = value
+            elif key == "learning_rate":
+                self.learning_rate = value
+            elif key == "subsample":
+                self.subsample = value
+            elif key == "colsample_bytree":
+                self.colsample_bytree = value
+            elif key == "reg_lambda":
+                self.reg_lambda = value
+            elif key == "reg_alpha":
+                self.reg_alpha = value
+            elif key == "random_state":
+                self.random_state = value
+        
+        # Recreate the XGBoost model with updated parameters
+        self._model = xgb.XGBClassifier(
+            n_estimators=self.n_estimators,
+            max_depth=self.max_depth,
+            learning_rate=self.learning_rate,
+            subsample=self.subsample,
+            colsample_bytree=self.colsample_bytree,
+            reg_lambda=self.reg_lambda,
+            reg_alpha=self.reg_alpha,
+            random_state=self.random_state,
+            use_label_encoder=False,
+            eval_metric='logloss'
+        )
+        
+        # Reset fitted flag
+        self.fitted = False
+        
+        return self
 
 
 class LightGBMModel(BaseModel):
@@ -510,55 +609,156 @@ class LightGBMModel(BaseModel):
         """Initialize LightGBM model."""
         super().__init__(config)
         self.model_type = "lightgbm"
+        
+        try:
+            import lightgbm as lgb
+        except ImportError:
+            raise ImportError(
+                "lightgbm package required for LightGBMModel. "
+                "Install with: pip install lightgbm"
+            )
+        
+        # Extract hyperparameters from config
+        hyperparams = {}
+        if config and isinstance(config, dict) and "hyperparameters" in config:
+            hyperparams = config["hyperparameters"]
+        
+        # Set default hyperparameters with config overrides
+        self.n_estimators = hyperparams.get("n_estimators", 100)
+        self.max_depth = hyperparams.get("max_depth", -1)
+        self.learning_rate = hyperparams.get("learning_rate", 0.1)
+        self.num_leaves = hyperparams.get("num_leaves", 31)
+        self.subsample = hyperparams.get("subsample", 1.0)
+        self.colsample_bytree = hyperparams.get("colsample_bytree", 1.0)
+        self.reg_lambda = hyperparams.get("reg_lambda", 0.0)
+        self.reg_alpha = hyperparams.get("reg_alpha", 0.0)
+        self.random_state = hyperparams.get("random_state", 42)
+        
+        # Initialize the LightGBM model
+        self._model = lgb.LGBMClassifier(
+            n_estimators=self.n_estimators,
+            max_depth=self.max_depth,
+            learning_rate=self.learning_rate,
+            num_leaves=self.num_leaves,
+            subsample=self.subsample,
+            colsample_bytree=self.colsample_bytree,
+            reg_lambda=self.reg_lambda,
+            reg_alpha=self.reg_alpha,
+            random_state=self.random_state
+        )
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "LightGBMModel":
         """
         Train LightGBM model.
         
-        Implementation notes:
-            - TODO: Check if lightgbm is installed
-            - TODO: Store feature names from X.columns
-            - TODO: Create lgb.LGBMClassifier with hyperparameters
-            - TODO: Fit on (X, y) with early stopping if available
-            - TODO: Set self.fitted = True
+        Trains the LightGBM classifier on the provided training data and stores
+        feature importances.
         """
-        # TODO: Implement
-        pass
+        # Store feature names for later use
+        self.feature_names = list(X.columns)
+        
+        # Train the LightGBM model
+        self._model.fit(X, y)
+        
+        # Set fitted flag
+        self.fitted = True
+        
+        # Store feature importances
+        self.feature_importances_ = self._model.feature_importances_
+        
+        return self
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         """
         Return probability predictions.
         
-        Implementation notes:
-            - TODO: Check if fitted
-            - TODO: Call self._model.predict_proba(X)
-            - TODO: Return (n_samples, 2) array
+        Returns probability estimates for binary classification.
         """
-        # TODO: Implement
-        pass
+        if not self.fitted:
+            raise ValueError("Model must be fitted before calling predict_proba(). Call fit() first.")
+        
+        return self._model.predict_proba(X)
 
     def get_feature_importance(self) -> pd.DataFrame:
         """
         Get LightGBM feature importance scores.
         
-        Implementation notes:
-            - TODO: Get importance from self._model.feature_importances_
-            - TODO: Create DataFrame with feature names and importance
-            - TODO: Sort by importance descending
-            - TODO: Handle case where importance sums to zero
+        Returns feature importances as a sorted DataFrame.
         """
-        # TODO: Implement
-        pass
+        if not self.fitted:
+            raise ValueError("Model must be fitted before calling get_feature_importance(). Call fit() first.")
+        
+        # Get importance scores
+        importance_scores = self.feature_importances_
+        
+        # Create DataFrame with feature names and importance
+        importance_df = pd.DataFrame({
+            "feature": self.feature_names,
+            "importance": importance_scores
+        })
+        
+        # Sort by importance descending
+        importance_df = importance_df.sort_values("importance", ascending=False).reset_index(drop=True)
+        
+        return importance_df
 
     def get_params(self, deep: bool = True) -> Dict[str, Any]:
         """Get model parameters."""
-        # TODO: Implement
-        pass
+        params = {
+            "n_estimators": self.n_estimators,
+            "max_depth": self.max_depth,
+            "learning_rate": self.learning_rate,
+            "num_leaves": self.num_leaves,
+            "subsample": self.subsample,
+            "colsample_bytree": self.colsample_bytree,
+            "reg_lambda": self.reg_lambda,
+            "reg_alpha": self.reg_alpha,
+            "random_state": self.random_state,
+        }
+        return params
 
     def set_params(self, **params) -> "LightGBMModel":
         """Set model parameters."""
-        # TODO: Implement
-        pass
+        import lightgbm as lgb
+        
+        # Update instance attributes
+        for key, value in params.items():
+            if key == "n_estimators":
+                self.n_estimators = value
+            elif key == "max_depth":
+                self.max_depth = value
+            elif key == "learning_rate":
+                self.learning_rate = value
+            elif key == "num_leaves":
+                self.num_leaves = value
+            elif key == "subsample":
+                self.subsample = value
+            elif key == "colsample_bytree":
+                self.colsample_bytree = value
+            elif key == "reg_lambda":
+                self.reg_lambda = value
+            elif key == "reg_alpha":
+                self.reg_alpha = value
+            elif key == "random_state":
+                self.random_state = value
+        
+        # Recreate the LightGBM model with updated parameters
+        self._model = lgb.LGBMClassifier(
+            n_estimators=self.n_estimators,
+            max_depth=self.max_depth,
+            learning_rate=self.learning_rate,
+            num_leaves=self.num_leaves,
+            subsample=self.subsample,
+            colsample_bytree=self.colsample_bytree,
+            reg_lambda=self.reg_lambda,
+            reg_alpha=self.reg_alpha,
+            random_state=self.random_state
+        )
+        
+        # Reset fitted flag
+        self.fitted = False
+        
+        return self
 
 
 class RandomForestModel(BaseModel):
@@ -596,53 +796,150 @@ class RandomForestModel(BaseModel):
         """Initialize Random Forest model."""
         super().__init__(config)
         self.model_type = "random_forest"
+        
+        from sklearn.ensemble import RandomForestClassifier
+        
+        # Extract hyperparameters from config
+        hyperparams = {}
+        if config and isinstance(config, dict) and "hyperparameters" in config:
+            hyperparams = config["hyperparameters"]
+        
+        # Set default hyperparameters with config overrides
+        self.n_estimators = hyperparams.get("n_estimators", 100)
+        self.max_depth = hyperparams.get("max_depth", None)
+        self.min_samples_split = hyperparams.get("min_samples_split", 2)
+        self.min_samples_leaf = hyperparams.get("min_samples_leaf", 1)
+        self.max_features = hyperparams.get("max_features", "sqrt")
+        self.bootstrap = hyperparams.get("bootstrap", True)
+        self.class_weight = hyperparams.get("class_weight", None)
+        self.random_state = hyperparams.get("random_state", 42)
+        self.n_jobs = hyperparams.get("n_jobs", 1)
+        
+        # Initialize the Random Forest model
+        self._model = RandomForestClassifier(
+            n_estimators=self.n_estimators,
+            max_depth=self.max_depth,
+            min_samples_split=self.min_samples_split,
+            min_samples_leaf=self.min_samples_leaf,
+            max_features=self.max_features,
+            bootstrap=self.bootstrap,
+            class_weight=self.class_weight,
+            random_state=self.random_state,
+            n_jobs=self.n_jobs
+        )
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "RandomForestModel":
         """
         Train random forest model.
         
-        Implementation notes:
-            - TODO: Store feature names from X.columns
-            - TODO: Create sklearn RandomForestClassifier with hyperparameters
-            - TODO: Fit on (X, y)
-            - TODO: Set self.fitted = True
+        Trains the Random Forest classifier on the provided training data and stores
+        feature importances.
         """
-        # TODO: Implement
-        pass
+        # Store feature names for later use
+        self.feature_names = list(X.columns)
+        
+        # Train the Random Forest model
+        self._model.fit(X, y)
+        
+        # Set fitted flag
+        self.fitted = True
+        
+        # Store feature importances
+        self.feature_importances_ = self._model.feature_importances_
+        
+        return self
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         """
         Return probability predictions.
         
-        Implementation notes:
-            - TODO: Check if fitted
-            - TODO: Call self._model.predict_proba(X)
-            - TODO: Return (n_samples, 2) array
+        Returns probability estimates for binary classification.
         """
-        # TODO: Implement
-        pass
+        if not self.fitted:
+            raise ValueError("Model must be fitted before calling predict_proba(). Call fit() first.")
+        
+        return self._model.predict_proba(X)
 
     def get_feature_importance(self) -> pd.DataFrame:
         """
         Get Random Forest feature importance scores.
         
-        Implementation notes:
-            - TODO: Get importance from self._model.feature_importances_
-            - TODO: Create DataFrame with feature names and importance
-            - TODO: Sort by importance descending
+        Returns feature importances as a sorted DataFrame.
         """
-        # TODO: Implement
-        pass
+        if not self.fitted:
+            raise ValueError("Model must be fitted before calling get_feature_importance(). Call fit() first.")
+        
+        # Get importance scores
+        importance_scores = self.feature_importances_
+        
+        # Create DataFrame with feature names and importance
+        importance_df = pd.DataFrame({
+            "feature": self.feature_names,
+            "importance": importance_scores
+        })
+        
+        # Sort by importance descending
+        importance_df = importance_df.sort_values("importance", ascending=False).reset_index(drop=True)
+        
+        return importance_df
 
     def get_params(self, deep: bool = True) -> Dict[str, Any]:
         """Get model parameters."""
-        # TODO: Implement
-        pass
+        params = {
+            "n_estimators": self.n_estimators,
+            "max_depth": self.max_depth,
+            "min_samples_split": self.min_samples_split,
+            "min_samples_leaf": self.min_samples_leaf,
+            "max_features": self.max_features,
+            "bootstrap": self.bootstrap,
+            "class_weight": self.class_weight,
+            "random_state": self.random_state,
+            "n_jobs": self.n_jobs,
+        }
+        return params
 
     def set_params(self, **params) -> "RandomForestModel":
         """Set model parameters."""
-        # TODO: Implement
-        pass
+        from sklearn.ensemble import RandomForestClassifier
+        
+        # Update instance attributes
+        for key, value in params.items():
+            if key == "n_estimators":
+                self.n_estimators = value
+            elif key == "max_depth":
+                self.max_depth = value
+            elif key == "min_samples_split":
+                self.min_samples_split = value
+            elif key == "min_samples_leaf":
+                self.min_samples_leaf = value
+            elif key == "max_features":
+                self.max_features = value
+            elif key == "bootstrap":
+                self.bootstrap = value
+            elif key == "class_weight":
+                self.class_weight = value
+            elif key == "random_state":
+                self.random_state = value
+            elif key == "n_jobs":
+                self.n_jobs = value
+        
+        # Recreate the Random Forest model with updated parameters
+        self._model = RandomForestClassifier(
+            n_estimators=self.n_estimators,
+            max_depth=self.max_depth,
+            min_samples_split=self.min_samples_split,
+            min_samples_leaf=self.min_samples_leaf,
+            max_features=self.max_features,
+            bootstrap=self.bootstrap,
+            class_weight=self.class_weight,
+            random_state=self.random_state,
+            n_jobs=self.n_jobs
+        )
+        
+        # Reset fitted flag
+        self.fitted = False
+        
+        return self
 
 
 class ModelFactory:
