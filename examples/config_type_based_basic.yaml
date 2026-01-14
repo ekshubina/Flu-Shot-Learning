@@ -52,11 +52,85 @@ encoding:
 # Model configuration
 model:
   model_type: logistic_regression
-  random_seed: 42
-  n_jobs: -1
+  # Options: logistic_regression, random_forest, xgboost, lightgbm
+  
+  hyperparameters:
+    # Logistic Regression parameters
+    penalty: l2
+    C: 1.0  # Inverse regularization strength (higher = less regularization)
+    solver: lbfgs
+    max_iter: 1000
+    random_state: 42
+    class_weight: balanced  # Handle class imbalance
 
 # Training configuration
 training:
   cv_strategy: stratified_kfold
+  # Options: stratified_kfold, repeated_stratified_kfold
+  
   cv_folds: 5
-  test_size: 0.2
+  
+  # Hyperparameter search
+  hyperparameter_search: false
+  search_strategy: grid  # Options: grid, random, bayesian
+  
+  # If search enabled, override hyperparameters with search space
+  search_space:
+    C: [0.001, 0.01, 0.1, 1.0, 10.0]
+    penalty: [l1, l2]
+  
+  # Class imbalance handling
+  class_weight_strategy: balanced  # Options: balanced, custom, none
+  use_smote: false  # Synthetic oversampling
+  threshold_tuning: false  # Optimize threshold on validation set
+
+# Calibration of probability estimates
+calibration:
+  method: platt
+  # Options: none, platt, isotonic, temperature
+  
+  calibration_folds: 3  # For nested cross-validation
+
+# Evaluation configuration
+evaluation:
+  metrics:
+    - auroc  # Primary metric
+    - calibration_error
+    - confusion_matrix
+    - brier_score
+  
+  # Probability threshold (default 0.5)
+  threshold: 0.5
+  
+  # Create visualizations
+  create_plots: true
+  plot_types:
+    - roc_curves
+    - calibration_curve
+    - feature_importance
+    - prediction_confidence
+
+# Experiment tracking
+tracking:
+  enabled: true
+  log_path: experiments_type_based_basic.csv
+  log_metrics:
+    - auroc_h1n1
+    - auroc_seasonal
+    - auroc_mean
+    - calibration_error_h1n1
+    - calibration_error_seasonal
+    - brier_score_h1n1
+    - brier_score_seasonal
+
+# Test set prediction
+prediction:
+  output_dir: ./submissions/
+  output_filename: submission_type_based_basic.csv
+  validate_submission: true
+
+# Logging configuration
+logging:
+  level: INFO  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_file: logs/type_based_basic_pipeline.log
+  format: '[%(asctime)s] %(name)s - %(levelname)s - %(message)s'
